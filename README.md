@@ -65,8 +65,8 @@ The DRM device argument is optional and defaults to `/dev/dri/card0`.
 - `scripts/build-libvncserver.sh`: pinned minimal PowerPC VNC dependency build
 
 The pre-split development history is preserved on the historical
-`feature/wii-kolibri-shell` branch of Wii Linux NXT until this repository and
-its release process are fully established.
+`archive/pre-split-wiidesk-history` branch of Wii Linux NXT. New WiiDesk
+development occurs only in this repository.
 
 ## License
 
