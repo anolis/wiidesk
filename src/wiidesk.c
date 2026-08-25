@@ -9,6 +9,7 @@
 #include <grp.h>
 #include <limits.h>
 #include <linux/input.h>
+#include <pwd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -64,8 +65,18 @@ struct font_data {
 #define SHELL_TASK_WIDTH 128
 #define SHELL_TASK_HEIGHT 20
 #define SHELL_CONTROL_SIZE 12
-#define SHELL_MENU_LOGOUT SHELL_APP_COUNT
-#define SHELL_MENU_ITEM_COUNT (SHELL_APP_COUNT + 1)
+#define SHELL_MENU_LOCK SHELL_APP_COUNT
+#define SHELL_MENU_LOGOUT (SHELL_APP_COUNT + 1)
+#define SHELL_MENU_ITEM_COUNT (SHELL_APP_COUNT + 2)
+#define SHELL_DESKTOP_ICON_X 18
+#define SHELL_DESKTOP_ICON_Y 54
+#define SHELL_DESKTOP_ICON_WIDTH 74
+#define SHELL_DESKTOP_ICON_HEIGHT 70
+#define SETTINGS_ROW_HEIGHT 38
+#define SETTINGS_ROW_COUNT 5
+#define SETTINGS_WALLPAPER_COUNT 3
+#define SETTINGS_ACCENT_COUNT 3
+#define SETTINGS_LOCK_COUNT 4
 #define TERMINAL_COLUMNS 50
 #define TERMINAL_ROWS 14
 #define TERMINAL_CSI_PARAMS 4
@@ -95,12 +106,14 @@ enum shell_app {
 	SHELL_APP_TERMINAL,
 	SHELL_APP_FILES,
 	SHELL_APP_SYSTEM,
+	SHELL_APP_SETTINGS,
 	SHELL_APP_COUNT,
 };
 
 enum shell_view {
 	SHELL_VIEW_SPLASH,
 	SHELL_VIEW_LOGIN,
+	SHELL_VIEW_LOCK,
 	SHELL_VIEW_DESKTOP,
 };
 
@@ -206,6 +219,19 @@ struct shell_login {
 	enum login_auth_state auth_state;
 };
 
+struct shell_settings {
+	unsigned int wallpaper;
+	unsigned int accent;
+	unsigned int pointer_scale;
+	unsigned int lock_option;
+	unsigned int selected;
+	int clock_24h;
+	char path[PATH_MAX];
+	char status[64];
+	uid_t owner;
+	gid_t group;
+};
+
 #ifdef WII_HAVE_VNC
 struct shell_vnc {
 	rfbScreenInfoPtr screen;
@@ -224,6 +250,7 @@ struct shell_state {
 	struct shell_files files;
 	struct shell_system system;
 	struct shell_login login;
+	struct shell_settings settings;
 #ifdef WII_HAVE_VNC
 	struct shell_vnc vnc;
 #endif
@@ -242,12 +269,16 @@ struct shell_state {
 	int caps_lock;
 	int menu_open;
 	int cursor_visible;
+	int desktop_selected;
+	int desktop_last_clicked;
 	int pointer_x;
 	int pointer_y;
+	uint64_t desktop_last_click_ms;
+	uint64_t last_input_ms;
 };
 
 static const char *const app_titles[SHELL_APP_COUNT] = {
-	"Terminal", "Files", "System",
+	"Terminal", "Files", "System", "Settings",
 };
 
 static const uint32_t shell_colors[] = {
@@ -283,7 +314,11 @@ enum shell_color {
 };
 
 static const enum shell_color app_accents[SHELL_APP_COUNT] = {
-	COLOR_TEAL, COLOR_GOLD, COLOR_VIOLET,
+	COLOR_TEAL, COLOR_GOLD, COLOR_VIOLET, COLOR_SKY,
+};
+
+static const enum shell_color setting_accents[SETTINGS_ACCENT_COUNT] = {
+	COLOR_TEAL, COLOR_SKY, COLOR_VIOLET,
 };
 
 static uint16_t rgb565(enum shell_color color)
@@ -298,6 +333,138 @@ static uint64_t shell_monotonic_ms(void)
 	if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
 		return 0;
 	return (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static enum shell_color shell_accent(const struct shell_state *shell)
+{
+	return setting_accents[shell->settings.accent % SETTINGS_ACCENT_COUNT];
+}
+
+static unsigned int settings_lock_minutes(const struct shell_settings *settings)
+{
+	static const unsigned int minutes[SETTINGS_LOCK_COUNT] = { 0, 5, 15, 30 };
+
+	return minutes[settings->lock_option % SETTINGS_LOCK_COUNT];
+}
+
+static void settings_defaults(struct shell_settings *settings)
+{
+	memset(settings, 0, sizeof(*settings));
+	settings->pointer_scale = 1;
+	settings->clock_24h = 1;
+}
+
+static int settings_make_directory(const char *path, uid_t owner, gid_t group)
+{
+	if (mkdir(path, 0700) < 0 && errno != EEXIST)
+		return -1;
+	if (chown(path, owner, group) < 0 && errno != EPERM)
+		return -1;
+	return 0;
+}
+
+static int settings_load(struct shell_settings *settings, const char *username)
+{
+	struct passwd *account;
+	FILE *passwd;
+	char config[PATH_MAX];
+	char directory[PATH_MAX];
+	char line[128];
+	FILE *file;
+
+	settings_defaults(settings);
+	passwd = fopen("/etc/passwd", "r");
+	account = passwd ? fgetpwent(passwd) : NULL;
+	while (account && strcmp(account->pw_name, username))
+		account = fgetpwent(passwd);
+	if (!account || !account->pw_dir || account->pw_dir[0] != '/') {
+		if (passwd)
+			fclose(passwd);
+		snprintf(settings->status, sizeof(settings->status),
+			 "Settings unavailable");
+		return -1;
+	}
+	settings->owner = account->pw_uid;
+	settings->group = account->pw_gid;
+	if (snprintf(config, sizeof(config), "%s/.config", account->pw_dir) >=
+	    (int)sizeof(config) ||
+	    snprintf(directory, sizeof(directory), "%s/wiidesk", config) >=
+	    (int)sizeof(directory) ||
+	    snprintf(settings->path, sizeof(settings->path), "%s/settings.conf",
+		     directory) >= (int)sizeof(settings->path)) {
+		settings->path[0] = '\0';
+		fclose(passwd);
+		return -1;
+	}
+	fclose(passwd);
+	if (settings_make_directory(config, settings->owner, settings->group) < 0 ||
+	    settings_make_directory(directory, settings->owner,
+				    settings->group) < 0) {
+		settings->path[0] = '\0';
+		snprintf(settings->status, sizeof(settings->status),
+			 "Settings are read-only");
+		return -1;
+	}
+	file = fopen(settings->path, "r");
+	if (!file) {
+		if (errno != ENOENT)
+			snprintf(settings->status, sizeof(settings->status),
+				 "Settings are read-only");
+		return errno == ENOENT ? 0 : -1;
+	}
+	while (fgets(line, sizeof(line), file)) {
+		unsigned int value;
+
+		if (sscanf(line, "wallpaper=%u", &value) == 1)
+			settings->wallpaper = value % SETTINGS_WALLPAPER_COUNT;
+		else if (sscanf(line, "accent=%u", &value) == 1)
+			settings->accent = value % SETTINGS_ACCENT_COUNT;
+		else if (sscanf(line, "clock_24h=%u", &value) == 1)
+			settings->clock_24h = value != 0;
+		else if (sscanf(line, "pointer_scale=%u", &value) == 1)
+			settings->pointer_scale = value >= 1 && value <= 3 ? value : 1;
+		else if (sscanf(line, "lock_option=%u", &value) == 1)
+			settings->lock_option = value % SETTINGS_LOCK_COUNT;
+	}
+	fclose(file);
+	return 0;
+}
+
+static int settings_save(struct shell_settings *settings)
+{
+	char temporary[PATH_MAX];
+	FILE *file;
+	int failed;
+	int result = -1;
+
+	if (!settings->path[0] ||
+	    snprintf(temporary, sizeof(temporary), "%s.tmp", settings->path) >=
+	    (int)sizeof(temporary))
+		goto out;
+	file = fopen(temporary, "w");
+	if (!file)
+		goto out;
+	fprintf(file, "wallpaper=%u\naccent=%u\nclock_24h=%u\n",
+		settings->wallpaper, settings->accent, settings->clock_24h);
+	fprintf(file, "pointer_scale=%u\nlock_option=%u\n",
+		settings->pointer_scale, settings->lock_option);
+	failed = fflush(file) || fsync(fileno(file)) ||
+		fchown(fileno(file), settings->owner, settings->group);
+	if (fclose(file))
+		failed = 1;
+	if (failed) {
+		unlink(temporary);
+		goto out;
+	}
+	if (rename(temporary, settings->path) < 0) {
+		unlink(temporary);
+		goto out;
+	}
+	result = 0;
+out:
+	snprintf(settings->status, sizeof(settings->status), "%s",
+		 result ? "Could not save settings" : "Saved");
+	return result;
 }
 
 static void terminal_clear_row(struct shell_terminal *terminal,
@@ -570,6 +737,25 @@ static int write_login_line(int master, const char *line)
 	return 0;
 }
 
+static void stop_login_child(pid_t child)
+{
+	int status;
+	int i;
+
+	if (child <= 0)
+		return;
+	(void)kill(-child, SIGHUP);
+	for (i = 0; i < 50; i++) {
+		pid_t result = waitpid(child, &status, WNOHANG);
+
+		if (result == child || (result < 0 && errno == ECHILD))
+			return;
+		(void)poll(NULL, 0, 10);
+	}
+	(void)kill(-child, SIGKILL);
+	(void)waitpid(child, &status, 0);
+}
+
 static int authenticate_login(const char *username, char *password,
 			      struct shell_terminal *terminal)
 {
@@ -678,35 +864,23 @@ static int authenticate_login(const char *username, char *password,
 	}
 	wipe_secret(password, LOGIN_PASSWORD_SIZE);
 	if (authenticated) {
-		memset(terminal, 0, sizeof(*terminal));
-		terminal->master_fd = master;
-		terminal->child_pid = child;
-		terminal_clear(terminal);
-		terminal->color = COLOR_TEXT;
-		(void)terminal_write(terminal, "\n", 1);
-		printf("wii-kolibri-shell: authenticated session pid=%d pty=%s\n",
-		       child, slave_path);
+		if (terminal) {
+			memset(terminal, 0, sizeof(*terminal));
+			terminal->master_fd = master;
+			terminal->child_pid = child;
+			terminal_clear(terminal);
+			terminal->color = COLOR_TEXT;
+			(void)terminal_write(terminal, "\n", 1);
+			printf("wiidesk: authenticated session pid=%d pty=%s\n",
+			       child, slave_path);
+		} else {
+			close(master);
+			stop_login_child(child);
+		}
 		return 1;
 	}
 	close(master);
-	if (child > 0) {
-		int i;
-
-		(void)kill(-child, SIGHUP);
-		for (i = 0; i < 50; i++) {
-			pid_t result = waitpid(child, &status, WNOHANG);
-
-			if (result == child || (result < 0 && errno == ECHILD)) {
-				child = 0;
-				break;
-			}
-			(void)poll(NULL, 0, 10);
-		}
-		if (child > 0) {
-			(void)kill(-child, SIGKILL);
-			(void)waitpid(child, &status, 0);
-		}
-	}
+	stop_login_child(child);
 	return 0;
 }
 
@@ -1213,6 +1387,8 @@ static void vnc_pointer_event(int buttons, int x, int y,
 	struct shell_state *shell = client->screen->screenData;
 	int previous = shell->vnc.buttons;
 
+	if (buttons != previous)
+		shell->last_input_ms = shell_monotonic_ms();
 	shell->vnc.changed |= update_pointer(shell, x - shell->pointer_x,
 					      y - shell->pointer_y);
 	if ((buttons ^ previous) & 1)
@@ -1257,7 +1433,7 @@ static enum rfbNewClientAction vnc_new_client(rfbClientPtr client)
 
 static int start_vnc(struct shell_state *shell, struct test_buffer *buffer)
 {
-	char program[] = "wii-kolibri-shell";
+	char program[] = "wiidesk";
 	char *arguments[2];
 	int argument_count = 1;
 	rfbScreenInfoPtr screen;
@@ -1296,7 +1472,7 @@ static int start_vnc(struct shell_state *shell, struct test_buffer *buffer)
 		return -1;
 	}
 	shell->vnc.screen = screen;
-	printf("wii-kolibri-shell: interactive VNC on 127.0.0.1:5900\n");
+	printf("wiidesk: interactive VNC on 127.0.0.1:5900\n");
 	return 0;
 }
 
@@ -1508,6 +1684,102 @@ static void draw_splash(struct test_buffer *buffer)
 	draw_text(buffer, 280, 360, "Starting...", rgb565(COLOR_TEXT));
 }
 
+static void draw_wallpaper(struct test_buffer *buffer,
+			   const struct shell_state *shell)
+{
+	int y;
+
+	switch (shell->settings.wallpaper % SETTINGS_WALLPAPER_COUNT) {
+	case 0:
+		fill_rect(buffer, 0, SHELL_WORKSPACE_TOP, TEST_WIDTH,
+			  SHELL_WORKSPACE_BOTTOM - SHELL_WORKSPACE_TOP,
+			  rgb565(COLOR_SKY));
+		fill_rect(buffer, 0, 312, TEST_WIDTH, 144, rgb565(COLOR_TEAL));
+		fill_rect(buffer, 0, 354, TEST_WIDTH, 102, rgb565(COLOR_GREEN));
+		for (y = 0; y < 5; y++)
+			fill_rect(buffer, 420 + y * 18, 92 + (y & 1) * 7,
+				  44, 3, rgb565(COLOR_TEXT));
+		break;
+	case 1:
+		fill_rect(buffer, 0, SHELL_WORKSPACE_TOP, TEST_WIDTH,
+			  SHELL_WORKSPACE_BOTTOM - SHELL_WORKSPACE_TOP,
+			  rgb565(COLOR_VIOLET));
+		fill_rect(buffer, 0, 248, TEST_WIDTH, 208, rgb565(COLOR_RED));
+		fill_rect(buffer, 0, 322, TEST_WIDTH, 134, rgb565(COLOR_GOLD));
+		fill_rect(buffer, 388, 90, 72, 72, rgb565(COLOR_GOLD));
+		fill_rect(buffer, 398, 100, 52, 52, rgb565(COLOR_TEXT));
+		break;
+	default:
+		fill_rect(buffer, 0, SHELL_WORKSPACE_TOP, TEST_WIDTH,
+			  SHELL_WORKSPACE_BOTTOM - SHELL_WORKSPACE_TOP,
+			  rgb565(COLOR_DESKTOP));
+		for (y = SHELL_WORKSPACE_TOP; y < SHELL_WORKSPACE_BOTTOM; y += 32)
+			fill_rect(buffer, 0, y, TEST_WIDTH, 1, rgb565(COLOR_BORDER));
+		for (y = 0; y < TEST_WIDTH; y += 32)
+			fill_rect(buffer, y, SHELL_WORKSPACE_TOP, 1,
+				  SHELL_WORKSPACE_BOTTOM - SHELL_WORKSPACE_TOP,
+				  rgb565(COLOR_BORDER));
+		fill_rect(buffer, 390, 96, 180, 4, rgb565(shell_accent(shell)));
+		fill_rect(buffer, 470, 100, 4, 180, rgb565(shell_accent(shell)));
+		break;
+	}
+}
+
+static void draw_app_symbol(struct test_buffer *buffer, enum shell_app app,
+			    int x, int y, enum shell_color color)
+{
+	fill_rect(buffer, x, y, 34, 34, rgb565(COLOR_PANEL));
+	stroke_rect(buffer, x, y, 34, 34, rgb565(color));
+	switch (app) {
+	case SHELL_APP_TERMINAL:
+		draw_text(buffer, x + 5, y + 9, ">_", rgb565(color));
+		break;
+	case SHELL_APP_FILES:
+		fill_rect(buffer, x + 5, y + 11, 24, 17, rgb565(color));
+		fill_rect(buffer, x + 7, y + 7, 10, 6, rgb565(color));
+		fill_rect(buffer, x + 7, y + 15, 20, 2, rgb565(COLOR_PANEL));
+		break;
+	case SHELL_APP_SYSTEM:
+		fill_rect(buffer, x + 6, y + 20, 4, 8, rgb565(color));
+		fill_rect(buffer, x + 14, y + 14, 4, 14, rgb565(color));
+		fill_rect(buffer, x + 22, y + 8, 4, 20, rgb565(color));
+		break;
+	case SHELL_APP_SETTINGS:
+		fill_rect(buffer, x + 6, y + 8, 22, 2, rgb565(color));
+		fill_rect(buffer, x + 6, y + 16, 22, 2, rgb565(color));
+		fill_rect(buffer, x + 6, y + 24, 22, 2, rgb565(color));
+		fill_rect(buffer, x + 11, y + 5, 4, 8, rgb565(COLOR_TEXT));
+		fill_rect(buffer, x + 21, y + 13, 4, 8, rgb565(COLOR_TEXT));
+		fill_rect(buffer, x + 14, y + 21, 4, 8, rgb565(COLOR_TEXT));
+		break;
+	default:
+		break;
+	}
+}
+
+static void draw_desktop_icons(struct test_buffer *buffer,
+			       const struct shell_state *shell)
+{
+	unsigned int i;
+
+	for (i = 0; i < SHELL_APP_COUNT; i++) {
+		int y = SHELL_DESKTOP_ICON_Y + i * SHELL_DESKTOP_ICON_HEIGHT;
+
+		if (shell->desktop_selected == (int)i) {
+			fill_rect(buffer, SHELL_DESKTOP_ICON_X - 6, y - 6,
+				  SHELL_DESKTOP_ICON_WIDTH, 62,
+				  rgb565(COLOR_PANEL));
+			stroke_rect(buffer, SHELL_DESKTOP_ICON_X - 6, y - 6,
+				    SHELL_DESKTOP_ICON_WIDTH, 62,
+				    rgb565(shell_accent(shell)));
+		}
+		draw_app_symbol(buffer, i, SHELL_DESKTOP_ICON_X + 12, y,
+				app_accents[i]);
+		draw_text(buffer, SHELL_DESKTOP_ICON_X, y + 40, app_titles[i],
+			  rgb565(COLOR_TEXT));
+	}
+}
+
 static void draw_login_field(struct test_buffer *buffer,
 			     const struct shell_login *login,
 			     enum login_field field, int y, const char *text)
@@ -1526,6 +1798,8 @@ static void draw_login(struct test_buffer *buffer,
 {
 	char password[LOGIN_PASSWORD_SIZE];
 	char status[35];
+	const char *title = shell->view == SHELL_VIEW_LOCK ? "Locked" : "WiiDesk";
+	int title_x = shell->view == SHELL_VIEW_LOCK ? 272 : 264;
 	size_t i;
 
 	fill_rect(buffer, 0, 0, TEST_WIDTH, TEST_HEIGHT, rgb565(COLOR_SKY));
@@ -1537,7 +1811,7 @@ static void draw_login(struct test_buffer *buffer,
 		  LOGIN_PANEL_HEIGHT, rgb565(COLOR_PANEL));
 	stroke_rect(buffer, LOGIN_PANEL_X, LOGIN_PANEL_Y, LOGIN_PANEL_WIDTH,
 		    LOGIN_PANEL_HEIGHT, rgb565(COLOR_BORDER));
-	draw_text_scaled(buffer, 264, 100, "WiiDesk", 2, rgb565(COLOR_TEXT));
+	draw_text_scaled(buffer, title_x, 100, title, 2, rgb565(COLOR_TEXT));
 	draw_text(buffer, LOGIN_FIELD_X, 156, "User", rgb565(COLOR_MUTED));
 	draw_login_field(buffer, &shell->login, LOGIN_FIELD_USERNAME,
 			 LOGIN_USERNAME_Y, shell->login.username);
@@ -1552,7 +1826,8 @@ static void draw_login(struct test_buffer *buffer,
 		  LOGIN_BUTTON_HEIGHT, rgb565(COLOR_TEAL));
 	stroke_rect(buffer, LOGIN_BUTTON_X, LOGIN_BUTTON_Y, LOGIN_BUTTON_WIDTH,
 		    LOGIN_BUTTON_HEIGHT, rgb565(COLOR_TERMINAL));
-	draw_text(buffer, LOGIN_BUTTON_X + 42, LOGIN_BUTTON_Y + 10, "Sign in",
+	draw_text(buffer, LOGIN_BUTTON_X + 42, LOGIN_BUTTON_Y + 10,
+		  shell->view == SHELL_VIEW_LOCK ? "Unlock" : "Sign in",
 		  rgb565(COLOR_TERMINAL));
 	snprintf(status, sizeof(status), "%.34s", shell->login.status);
 	draw_text(buffer, LOGIN_FIELD_X, 360, status,
@@ -1615,20 +1890,29 @@ static void draw_start_menu(struct test_buffer *buffer,
 				  rgb565(app_accents[i]));
 	}
 	{
-		int y = top + SHELL_MENU_HEADER_HEIGHT +
-			SHELL_APP_COUNT * SHELL_MENU_ROW_HEIGHT;
+		static const char *const titles[] = { "Lock", "Log out" };
+		static const enum shell_color colors[] = { COLOR_GOLD, COLOR_RED };
+		unsigned int action;
 
-		if (shell->selected == SHELL_MENU_LOGOUT) {
-			fill_rect(buffer, SHELL_MENU_X + 6, y + 3,
-				  SHELL_MENU_WIDTH - 12, SHELL_MENU_ROW_HEIGHT - 4,
-				  rgb565(COLOR_BORDER));
-			fill_rect(buffer, SHELL_MENU_X + 6, y + 3, 3,
-				  SHELL_MENU_ROW_HEIGHT - 4, rgb565(COLOR_RED));
+		for (action = 0; action < ARRAY_SIZE(titles); action++) {
+			unsigned int item = SHELL_MENU_LOCK + action;
+			int y = top + SHELL_MENU_HEADER_HEIGHT +
+				item * SHELL_MENU_ROW_HEIGHT;
+
+			if (shell->selected == item) {
+				fill_rect(buffer, SHELL_MENU_X + 6, y + 3,
+					  SHELL_MENU_WIDTH - 12,
+					  SHELL_MENU_ROW_HEIGHT - 4,
+					  rgb565(COLOR_BORDER));
+				fill_rect(buffer, SHELL_MENU_X + 6, y + 3, 3,
+					  SHELL_MENU_ROW_HEIGHT - 4,
+					  rgb565(colors[action]));
+			}
+			fill_rect(buffer, SHELL_MENU_X + 18, y + 12, 16, 16,
+				  rgb565(colors[action]));
+			draw_text(buffer, SHELL_MENU_X + 46, y + 12,
+				  titles[action], rgb565(COLOR_TEXT));
 		}
-		fill_rect(buffer, SHELL_MENU_X + 18, y + 12, 16, 16,
-			  rgb565(COLOR_RED));
-		draw_text(buffer, SHELL_MENU_X + 46, y + 12, "Log out",
-			  rgb565(COLOR_TEXT));
 	}
 }
 
@@ -1777,6 +2061,60 @@ static void draw_system(struct test_buffer *buffer,
 			COLOR_TEAL : COLOR_RED);
 }
 
+static void draw_settings(struct test_buffer *buffer,
+			  const struct shell_state *shell,
+			  const struct shell_window *window)
+{
+	static const char *const labels[SETTINGS_ROW_COUNT] = {
+		"Wallpaper", "Accent", "Clock", "Pointer", "Auto lock",
+	};
+	static const char *const wallpapers[SETTINGS_WALLPAPER_COUNT] = {
+		"Aqua", "Sunset", "Graphite",
+	};
+	static const char *const accents[SETTINGS_ACCENT_COUNT] = {
+		"Teal", "Sky", "Violet",
+	};
+	static const char *const locks[SETTINGS_LOCK_COUNT] = {
+		"Off", "5 minutes", "15 minutes", "30 minutes",
+	};
+	const struct shell_settings *settings = &shell->settings;
+	char pointer[16];
+	char account[40];
+	const char *values[SETTINGS_ROW_COUNT];
+	unsigned int i;
+	int x = window->x + 20;
+	int y = window->y + 44;
+
+	snprintf(pointer, sizeof(pointer), "%ux", settings->pointer_scale);
+	values[0] = wallpapers[settings->wallpaper % SETTINGS_WALLPAPER_COUNT];
+	values[1] = accents[settings->accent % SETTINGS_ACCENT_COUNT];
+	values[2] = settings->clock_24h ? "24 hour" : "12 hour";
+	values[3] = pointer;
+	values[4] = locks[settings->lock_option % SETTINGS_LOCK_COUNT];
+	for (i = 0; i < SETTINGS_ROW_COUNT; i++) {
+		int row_y = y + i * SETTINGS_ROW_HEIGHT;
+
+		if (settings->selected == i) {
+			fill_rect(buffer, x, row_y, window->width - 40,
+				  SETTINGS_ROW_HEIGHT - 4, rgb565(COLOR_BORDER));
+			fill_rect(buffer, x, row_y, 3, SETTINGS_ROW_HEIGHT - 4,
+				  rgb565(shell_accent(shell)));
+		}
+		draw_text(buffer, x + 14, row_y + 9, labels[i],
+			  rgb565(COLOR_MUTED));
+		draw_text(buffer, x + 172, row_y + 9, "<", rgb565(COLOR_TEXT));
+		draw_text(buffer, x + 194, row_y + 9, values[i],
+			  rgb565(COLOR_TEXT));
+		draw_text(buffer, window->x + window->width - 38, row_y + 9,
+			  ">", rgb565(COLOR_TEXT));
+	}
+	snprintf(account, sizeof(account), "Account: %.28s", shell->login.username);
+	draw_text(buffer, x, window->y + window->height - 42, account,
+		  rgb565(COLOR_MUTED));
+	draw_text(buffer, x, window->y + window->height - 22,
+		  settings->status, rgb565(shell_accent(shell)));
+}
+
 static void draw_window(struct test_buffer *buffer,
 			const struct shell_state *shell,
 			const struct shell_window *window)
@@ -1839,6 +2177,9 @@ static void draw_window(struct test_buffer *buffer,
 	case SHELL_APP_SYSTEM:
 		draw_system(buffer, shell, window);
 		break;
+	case SHELL_APP_SETTINGS:
+		draw_settings(buffer, shell, window);
+		break;
 	default:
 		break;
 	}
@@ -1889,26 +2230,33 @@ static void draw_shell(struct test_buffer *buffer,
 	time_t now = time(NULL);
 	struct tm local;
 	char clock_text[16] = "--:--";
+	char account_text[20];
 	unsigned int i;
 
 	if (shell->view == SHELL_VIEW_SPLASH) {
 		draw_splash(buffer);
 		return;
 	}
-	if (shell->view == SHELL_VIEW_LOGIN) {
+	if (shell->view == SHELL_VIEW_LOGIN || shell->view == SHELL_VIEW_LOCK) {
 		draw_login(buffer, shell);
 		draw_pointer(buffer, shell->pointer_x, shell->pointer_y);
 		return;
 	}
 
-	fill_rect(buffer, 0, 0, TEST_WIDTH, TEST_HEIGHT, rgb565(COLOR_DESKTOP));
+	draw_wallpaper(buffer, shell);
 	fill_rect(buffer, 0, 0, TEST_WIDTH, 32, rgb565(COLOR_PANEL));
 	fill_rect(buffer, 0, 31, TEST_WIDTH, 1, rgb565(COLOR_BORDER));
-	fill_rect(buffer, 14, 8, 16, 16, rgb565(COLOR_RED));
+	fill_rect(buffer, 14, 8, 16, 16, rgb565(shell_accent(shell)));
 	draw_text(buffer, 40, 8, "WiiDesk", rgb565(COLOR_TEXT));
 	if (localtime_r(&now, &local))
-		strftime(clock_text, sizeof(clock_text), "%H:%M", &local);
-	draw_text(buffer, 580, 8, clock_text, rgb565(COLOR_MUTED));
+		strftime(clock_text, sizeof(clock_text),
+			 shell->settings.clock_24h ? "%H:%M" : "%I:%M %p", &local);
+	snprintf(account_text, sizeof(account_text), "%.12s", shell->login.username);
+	draw_text(buffer, 460, 8,
+		  account_text, rgb565(COLOR_MUTED));
+	draw_text(buffer, shell->settings.clock_24h ? 580 : 568, 8,
+		  clock_text, rgb565(COLOR_MUTED));
+	draw_desktop_icons(buffer, shell);
 
 	for (i = 0; i < SHELL_APP_COUNT; i++) {
 		const struct shell_window *window =
@@ -1922,17 +2270,16 @@ static void draw_shell(struct test_buffer *buffer,
 		  rgb565(COLOR_PANEL));
 	fill_rect(buffer, 0, TEST_HEIGHT - 24, TEST_WIDTH, 1,
 		  rgb565(COLOR_BORDER));
-	draw_text(buffer, 14, TEST_HEIGHT - 20, "Ready", rgb565(COLOR_MUTED));
 	fill_rect(buffer, SHELL_START_X, TEST_HEIGHT - 22, SHELL_START_WIDTH,
 		  SHELL_TASK_HEIGHT,
 		  rgb565(shell->menu_open ? COLOR_BORDER : COLOR_TERMINAL));
 	fill_rect(buffer, SHELL_START_X, TEST_HEIGHT - 22, 3,
-		  SHELL_TASK_HEIGHT, rgb565(COLOR_RED));
+		  SHELL_TASK_HEIGHT, rgb565(shell_accent(shell)));
 	draw_text(buffer, SHELL_START_X + 10, TEST_HEIGHT - 20, "WiiDesk",
 		  rgb565(COLOR_TEXT));
 	draw_tasks(buffer, shell);
 	fill_rect(buffer, 602, TEST_HEIGHT - 16, 8, 8,
-		  rgb565(shell->cursor_visible ? COLOR_TEAL : COLOR_BORDER));
+		  rgb565(shell->cursor_visible ? shell_accent(shell) : COLOR_BORDER));
 	draw_start_menu(buffer, shell);
 	draw_pointer(buffer, shell->pointer_x, shell->pointer_y);
 }
@@ -1994,7 +2341,7 @@ static void open_inputs(struct shell_state *shell)
 		(void)ioctl(fd, EVIOCGNAME(sizeof(name)), name);
 		input->fd = fd;
 		shell->input_count++;
-		printf("wii-kolibri-shell: input %s (%s, %s%s)\n", input->path,
+		printf("wiidesk: input %s (%s, %s%s)\n", input->path,
 		       name, keyboard ? "keyboard" : "",
 		       pointer ? (keyboard ? "+pointer" : "pointer") : "");
 	}
@@ -2024,11 +2371,31 @@ static void init_windows(struct shell_state *shell)
 		.width = 410,
 		.height = 280,
 	};
+	shell->windows[SHELL_APP_SETTINGS] = (struct shell_window) {
+		.app = SHELL_APP_SETTINGS,
+		.x = 180,
+		.y = 82,
+		.width = 430,
+		.height = 300,
+	};
 	shell->z_order[0] = SHELL_APP_SYSTEM;
 	shell->z_order[1] = SHELL_APP_FILES;
-	shell->z_order[2] = SHELL_APP_TERMINAL;
+	shell->z_order[2] = SHELL_APP_SETTINGS;
+	shell->z_order[3] = SHELL_APP_TERMINAL;
 	shell->focused = SHELL_APP_TERMINAL;
 	shell->dragging = -1;
+}
+
+static void lock_desktop_session(struct shell_state *shell)
+{
+	shell->menu_open = 0;
+	shell->selected = SHELL_MENU_LOCK;
+	shell->view = SHELL_VIEW_LOCK;
+	shell->login.field = LOGIN_FIELD_PASSWORD;
+	shell->login.auth_state = LOGIN_AUTH_IDLE;
+	wipe_secret(shell->login.password, sizeof(shell->login.password));
+	shell->login.password_length = 0;
+	snprintf(shell->login.status, sizeof(shell->login.status), "Session locked");
 }
 
 static void end_desktop_session(struct shell_state *shell)
@@ -2036,9 +2403,12 @@ static void end_desktop_session(struct shell_state *shell)
 	stop_terminal(&shell->terminal);
 	memset(&shell->files, 0, sizeof(shell->files));
 	memset(&shell->system, 0, sizeof(shell->system));
+	settings_defaults(&shell->settings);
 	init_windows(shell);
 	shell->menu_open = 0;
 	shell->selected = 0;
+	shell->desktop_selected = -1;
+	shell->desktop_last_clicked = -1;
 	shell->view = SHELL_VIEW_LOGIN;
 	shell->login.field = shell->login.username_length ?
 		LOGIN_FIELD_PASSWORD : LOGIN_FIELD_USERNAME;
@@ -2186,6 +2556,34 @@ static int launcher_at(const struct shell_state *shell, int x, int y)
 	return -1;
 }
 
+static int desktop_icon_at(int x, int y)
+{
+	unsigned int i;
+
+	if (x < SHELL_DESKTOP_ICON_X - 6 ||
+	    x >= SHELL_DESKTOP_ICON_X - 6 + SHELL_DESKTOP_ICON_WIDTH)
+		return -1;
+	for (i = 0; i < SHELL_APP_COUNT; i++) {
+		int top = SHELL_DESKTOP_ICON_Y + i * SHELL_DESKTOP_ICON_HEIGHT - 6;
+
+		if (y >= top && y < top + 62)
+			return i;
+	}
+	return -1;
+}
+
+static int settings_row_at(const struct shell_window *window, int x, int y)
+{
+	int row;
+
+	if (x < window->x + 20 || x >= window->x + window->width - 20 ||
+	    y < window->y + 44 ||
+	    y >= window->y + 44 + SETTINGS_ROW_COUNT * SETTINGS_ROW_HEIGHT)
+		return -1;
+	row = (y - window->y - 44) / SETTINGS_ROW_HEIGHT;
+	return row < SETTINGS_ROW_COUNT ? row : -1;
+}
+
 static int window_at(const struct shell_state *shell, int x, int y)
 {
 	int i;
@@ -2241,6 +2639,79 @@ static void focus_next_window(struct shell_state *shell)
 	}
 }
 
+static unsigned int cycle_value(unsigned int value, unsigned int count,
+				int direction)
+{
+	if (direction < 0)
+		return value ? value - 1 : count - 1;
+	return (value + 1) % count;
+}
+
+static int settings_adjust(struct shell_state *shell, unsigned int row,
+			   int direction)
+{
+	struct shell_settings *settings = &shell->settings;
+	unsigned int value;
+
+	switch (row) {
+	case 0:
+		value = cycle_value(settings->wallpaper, SETTINGS_WALLPAPER_COUNT,
+				    direction);
+		settings->wallpaper = value;
+		break;
+	case 1:
+		value = cycle_value(settings->accent, SETTINGS_ACCENT_COUNT,
+				    direction);
+		settings->accent = value;
+		break;
+	case 2:
+		settings->clock_24h = !settings->clock_24h;
+		break;
+	case 3:
+		if (direction < 0)
+			settings->pointer_scale = settings->pointer_scale > 1 ?
+				settings->pointer_scale - 1 : 3;
+		else
+			settings->pointer_scale = settings->pointer_scale < 3 ?
+				settings->pointer_scale + 1 : 1;
+		break;
+	case 4:
+		value = cycle_value(settings->lock_option, SETTINGS_LOCK_COUNT,
+				    direction);
+		settings->lock_option = value;
+		break;
+	default:
+		return 0;
+	}
+	(void)settings_save(settings);
+	return 1;
+}
+
+static int handle_settings_key(struct shell_state *shell, unsigned int key)
+{
+	struct shell_settings *settings = &shell->settings;
+
+	switch (key) {
+	case KEY_UP:
+		settings->selected = settings->selected ? settings->selected - 1 :
+			SETTINGS_ROW_COUNT - 1;
+		return 1;
+	case KEY_DOWN:
+	case KEY_TAB:
+		settings->selected = (settings->selected + 1) % SETTINGS_ROW_COUNT;
+		return 1;
+	case KEY_LEFT:
+		return settings_adjust(shell, settings->selected, -1);
+	case KEY_RIGHT:
+	case KEY_ENTER:
+	case KEY_KPENTER:
+	case KEY_SPACE:
+		return settings_adjust(shell, settings->selected, 1);
+	default:
+		return 0;
+	}
+}
+
 static int handle_key(struct shell_state *shell, unsigned int key)
 {
 	switch (key) {
@@ -2264,6 +2735,10 @@ static int handle_key(struct shell_state *shell, unsigned int key)
 	case KEY_SPACE:
 		if (!shell->menu_open)
 			return 0;
+		if (shell->selected == SHELL_MENU_LOCK) {
+			lock_desktop_session(shell);
+			return 1;
+		}
 		if (shell->selected == SHELL_MENU_LOGOUT) {
 			end_desktop_session(shell);
 			return 1;
@@ -2299,6 +2774,10 @@ static int handle_key(struct shell_state *shell, unsigned int key)
 		return 1;
 	case KEY_F8:
 		shell->menu_open = !shell->menu_open;
+		return 1;
+	case KEY_F9:
+		shell->selected = SHELL_APP_SETTINGS;
+		open_window(shell, SHELL_APP_SETTINGS);
 		return 1;
 	case KEY_ESC:
 		if (shell->menu_open) {
@@ -2397,20 +2876,26 @@ static int handle_login_key(struct shell_state *shell, unsigned int key)
 		return 0;
 	if (login->auth_state != LOGIN_AUTH_IDLE)
 		return 0;
+	if (shell->view == SHELL_VIEW_LOCK)
+		login->field = LOGIN_FIELD_PASSWORD;
 	if (key == KEY_TAB || key == KEY_UP || key == KEY_DOWN) {
+		if (shell->view == SHELL_VIEW_LOCK)
+			return 0;
 		login->field = login->field == LOGIN_FIELD_USERNAME ?
 			LOGIN_FIELD_PASSWORD : LOGIN_FIELD_USERNAME;
 		return 1;
 	}
 	if (key == KEY_ENTER || key == KEY_KPENTER) {
-		if (login->field == LOGIN_FIELD_USERNAME) {
+		if (login->field == LOGIN_FIELD_USERNAME &&
+		    shell->view != SHELL_VIEW_LOCK) {
 			login->field = LOGIN_FIELD_PASSWORD;
 			return 1;
 		}
 		queue_login(shell);
 		return 1;
 	}
-	if (login->field == LOGIN_FIELD_USERNAME) {
+	if (login->field == LOGIN_FIELD_USERNAME &&
+	    shell->view != SHELL_VIEW_LOCK) {
 		field = login->username;
 		length = &login->username_length;
 		capacity = sizeof(login->username);
@@ -2462,10 +2947,31 @@ static int start_desktop_session(struct shell_state *shell)
 		shell->login.field = LOGIN_FIELD_PASSWORD;
 		return 0;
 	}
+	(void)settings_load(&shell->settings, shell->login.username);
 	init_windows(shell);
 	refresh_system(&shell->system);
 	shell->login.status[0] = '\0';
 	shell->view = SHELL_VIEW_DESKTOP;
+	shell->last_input_ms = shell_monotonic_ms();
+	return 1;
+}
+
+static int unlock_desktop_session(struct shell_state *shell)
+{
+	int authenticated = authenticate_login(shell->login.username,
+					       shell->login.password, NULL);
+
+	shell->login.password_length = 0;
+	shell->login.auth_state = LOGIN_AUTH_IDLE;
+	if (authenticated <= 0) {
+		snprintf(shell->login.status, sizeof(shell->login.status), "%s",
+			 authenticated < 0 ? "Unlock service unavailable" :
+			 "Unlock failed");
+		return 0;
+	}
+	shell->login.status[0] = '\0';
+	shell->view = SHELL_VIEW_DESKTOP;
+	shell->last_input_ms = shell_monotonic_ms();
 	return 1;
 }
 
@@ -2561,6 +3067,7 @@ static int handle_key_event(struct shell_state *shell, unsigned int key,
 	}
 	if (value != 1 && value != 2)
 		return 0;
+	shell->last_input_ms = shell_monotonic_ms();
 	if (shell->view != SHELL_VIEW_DESKTOP)
 		return handle_login_key(shell, key);
 	if (shell->menu_open && value == 1 &&
@@ -2568,8 +3075,15 @@ static int handle_key_event(struct shell_state *shell, unsigned int key,
 	     key == KEY_RIGHT || key == KEY_TAB || key == KEY_ENTER ||
 	     key == KEY_KPENTER || key == KEY_SPACE || key == KEY_ESC))
 		return handle_key(shell, key == KEY_KPENTER ? KEY_ENTER : key);
-	if (key >= KEY_F1 && key <= KEY_F8)
+	if (key >= KEY_F1 && key <= KEY_F9)
 		return handle_key(shell, key);
+	if (shell->focused == SHELL_APP_SETTINGS &&
+	    shell->windows[SHELL_APP_SETTINGS].visible) {
+		if (value == 2 && key != KEY_UP && key != KEY_DOWN &&
+		    key != KEY_LEFT && key != KEY_RIGHT)
+			return 0;
+		return handle_settings_key(shell, key);
+	}
 	if (shell->focused == SHELL_APP_TERMINAL &&
 	    shell->windows[SHELL_APP_TERMINAL].visible &&
 	    shell->terminal.master_fd >= 0) {
@@ -2593,6 +3107,7 @@ static int update_pointer(struct shell_state *shell, int delta_x, int delta_y)
 
 	if (!delta_x && !delta_y)
 		return 0;
+	shell->last_input_ms = shell_monotonic_ms();
 	shell->pointer_x += delta_x;
 	shell->pointer_y += delta_y;
 	if (shell->pointer_x < 0)
@@ -2650,6 +3165,8 @@ static int files_entry_at(const struct shell_state *shell,
 static int handle_pointer_button(struct shell_state *shell, int pressed)
 {
 	struct shell_window *window;
+	uint64_t now;
+	int icon;
 	int task;
 	int launcher;
 	int app;
@@ -2658,10 +3175,12 @@ static int handle_pointer_button(struct shell_state *shell, int pressed)
 		shell->dragging = -1;
 		return 1;
 	}
+	shell->last_input_ms = shell_monotonic_ms();
 	if (shell->view == SHELL_VIEW_SPLASH)
 		return 1;
-	if (shell->view == SHELL_VIEW_LOGIN) {
-		if (shell->pointer_x >= LOGIN_FIELD_X &&
+	if (shell->view == SHELL_VIEW_LOGIN || shell->view == SHELL_VIEW_LOCK) {
+		if (shell->view == SHELL_VIEW_LOGIN &&
+		    shell->pointer_x >= LOGIN_FIELD_X &&
 		    shell->pointer_x < LOGIN_FIELD_X + LOGIN_FIELD_WIDTH &&
 		    shell->pointer_y >= LOGIN_USERNAME_Y &&
 		    shell->pointer_y < LOGIN_USERNAME_Y + 34)
@@ -2685,7 +3204,9 @@ static int handle_pointer_button(struct shell_state *shell, int pressed)
 	launcher = launcher_at(shell, shell->pointer_x, shell->pointer_y);
 	if (launcher >= 0) {
 		shell->selected = launcher;
-		if (launcher == SHELL_MENU_LOGOUT)
+		if (launcher == SHELL_MENU_LOCK)
+			lock_desktop_session(shell);
+		else if (launcher == SHELL_MENU_LOGOUT)
 			end_desktop_session(shell);
 		else
 			open_window(shell, launcher);
@@ -2702,6 +3223,22 @@ static int handle_pointer_button(struct shell_state *shell, int pressed)
 	}
 	app = window_at(shell, shell->pointer_x, shell->pointer_y);
 	if (app < 0) {
+		icon = desktop_icon_at(shell->pointer_x, shell->pointer_y);
+		now = shell_monotonic_ms();
+		if (icon >= 0) {
+			shell->desktop_selected = icon;
+			if (shell->desktop_last_clicked == icon &&
+			    now - shell->desktop_last_click_ms <= 500) {
+				shell->desktop_last_clicked = -1;
+				open_window(shell, icon);
+			} else {
+				shell->desktop_last_clicked = icon;
+				shell->desktop_last_click_ms = now;
+			}
+			return 1;
+		}
+		shell->desktop_selected = -1;
+		shell->desktop_last_clicked = -1;
 		shell->focused = -1;
 		return 1;
 	}
@@ -2734,18 +3271,26 @@ static int handle_pointer_button(struct shell_state *shell, int pressed)
 	}
 	if (app == SHELL_APP_FILES) {
 		int index = files_entry_at(shell, window);
-		uint64_t now = shell_monotonic_ms();
+		uint64_t click_time = shell_monotonic_ms();
 
 		if (index < 0)
 			return 1;
 		shell->files.selected = index;
 		if (shell->files.last_clicked == index &&
-		    now - shell->files.last_click_ms <= 500) {
+		    click_time - shell->files.last_click_ms <= 500) {
 			shell->files.last_clicked = -1;
 			return files_open_selected(&shell->files);
 		}
 		shell->files.last_clicked = index;
-		shell->files.last_click_ms = now;
+		shell->files.last_click_ms = click_time;
+	} else if (app == SHELL_APP_SETTINGS) {
+		int row = settings_row_at(window, shell->pointer_x,
+					  shell->pointer_y);
+
+		if (row >= 0) {
+			shell->settings.selected = row;
+			return settings_adjust(shell, row, 1);
+		}
 	}
 	return 1;
 }
@@ -2832,7 +3377,9 @@ static int poll_inputs(struct shell_state *shell)
 		}
 		if (bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
 			return -1;
-		changed |= update_pointer(shell, delta_x, delta_y);
+		changed |= update_pointer(shell,
+					  delta_x * (int)shell->settings.pointer_scale,
+					  delta_y * (int)shell->settings.pointer_scale);
 		if (wheel && shell->view == SHELL_VIEW_LOGIN) {
 			unsigned int key = wheel > 0 ? KEY_UP : KEY_DOWN;
 
@@ -2840,6 +3387,7 @@ static int poll_inputs(struct shell_state *shell)
 		} else if (wheel && shell->view == SHELL_VIEW_DESKTOP) {
 			unsigned int key = wheel > 0 ? KEY_UP : KEY_DOWN;
 
+			shell->last_input_ms = shell_monotonic_ms();
 			if (shell->focused == SHELL_APP_FILES)
 				changed |= handle_files_key(&shell->files, key);
 			else
@@ -2893,6 +3441,8 @@ int main(int argc, char **argv)
 			.auth_state = LOGIN_AUTH_IDLE,
 		},
 		.cursor_visible = 1,
+		.desktop_selected = -1,
+		.desktop_last_clicked = -1,
 		.pointer_x = TEST_WIDTH / 2,
 		.pointer_y = TEST_HEIGHT / 2,
 	};
@@ -2921,6 +3471,7 @@ int main(int argc, char **argv)
 		shell.buffers[i].map = MAP_FAILED;
 	for (i = 0; i < ARRAY_SIZE(shell.inputs); i++)
 		shell.inputs[i].fd = -1;
+	settings_defaults(&shell.settings);
 	init_windows(&shell);
 	shell.login.splash_until_ms = shell_monotonic_ms() + LOGIN_SPLASH_MS;
 
@@ -2982,9 +3533,9 @@ int main(int argc, char **argv)
 	crtc_active = 1;
 
 	open_inputs(&shell);
-	printf("wii-kolibri-shell: active %ux%u rgb565 with %u input device(s)\n",
+	printf("wiidesk: active %ux%u rgb565 with %u input device(s)\n",
 	       mode.hdisplay, mode.vdisplay, shell.input_count);
-	printf("wii-kolibri-shell: greeter ready; unprivileged su provides PAM authentication\n");
+	printf("wiidesk: greeter ready; unprivileged su provides PAM authentication\n");
 	fflush(stdout);
 	signal(SIGINT, handle_signal);
 	signal(SIGTERM, handle_signal);
@@ -3006,12 +3557,24 @@ int main(int argc, char **argv)
 			changed = 1;
 		}
 		if (shell.login.auth_state == LOGIN_AUTH_QUEUED) {
+			int unlocking = shell.view == SHELL_VIEW_LOCK;
+
 			shell.login.auth_state = LOGIN_AUTH_RUNNING;
 			if (present_shell(drm_fd, crtc.crtc_id, &shell) < 0) {
 				perror("page flip");
 				goto out;
 			}
-			(void)start_desktop_session(&shell);
+			if (unlocking)
+				(void)unlock_desktop_session(&shell);
+			else
+				(void)start_desktop_session(&shell);
+			changed = 1;
+		}
+		if (shell.view == SHELL_VIEW_DESKTOP &&
+		    settings_lock_minutes(&shell.settings) &&
+		    now - shell.last_input_ms >=
+		    (uint64_t)settings_lock_minutes(&shell.settings) * 60000) {
+			lock_desktop_session(&shell);
 			changed = 1;
 		}
 		second = now / 1000;
