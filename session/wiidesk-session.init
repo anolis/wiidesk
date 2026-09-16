@@ -1,0 +1,58 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          wiidesk-session
+# Required-Start:    $local_fs $remote_fs wiidesk
+# Required-Stop:     $local_fs $remote_fs wiidesk
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: WiiDesk X11 login with native VT7 fallback
+### END INIT INFO
+set -eu
+base=/usr/local/lib/wiidesk-session
+pidfile=/run/wiidesk-session.pid
+running() {
+    test -s "$pidfile" || return 1
+    pid=$(cat "$pidfile")
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    test "$(cat "/proc/$pid/comm" 2>/dev/null)" = supervise && kill -0 "$pid" 2>/dev/null
+}
+case ${1:-} in
+start)
+    if [ -e /etc/wiidesk-native-only ] || grep -qw 'wiidesk.native=1' /proc/cmdline; then
+        echo 'WiiDesk: native-only recovery selected'
+        exit 0
+    fi
+    test -x "$base/supervise"
+    test -x /usr/bin/xdm
+    test -x /usr/bin/xsecurelock
+    test -r /etc/pam.d/wiidesk-lock
+    /etc/init.d/wiidesk status >/dev/null || /etc/init.d/wiidesk start
+    if [ -s /run/wiidesk-xdm.pid ] && kill -0 "$(cat /run/wiidesk-xdm.pid)" 2>/dev/null; then
+        if ! running; then
+            echo 'A manual XDM trial is running; stop that trial before starting the service.' >&2
+            exit 1
+        fi
+    fi
+    start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$pidfile" --name supervise \
+        --startas /bin/sh -- -c 'exec /usr/local/lib/wiidesk-session/supervise >>/var/log/wiidesk-session.log 2>&1'
+    attempts=0
+    until running; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 50 ] || exit 1
+        sleep .1
+    done
+    ;;
+stop)
+    start-stop-daemon --stop --quiet --oknodo --retry TERM/20/KILL/5 --pidfile "$pidfile" --name supervise --remove-pidfile
+    ;;
+restart|force-reload) "$0" stop; "$0" start ;;
+status)
+    if running; then
+        cat /run/wiidesk-session.status
+    else
+        test ! -r /run/wiidesk-session.status || cat /run/wiidesk-session.status
+        exit 3
+    fi
+    ;;
+*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 2;;
+esac

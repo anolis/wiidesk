@@ -31,7 +31,8 @@ buttons, dialogs, clipboard, and consistent keyboard navigation.
 - System: live CPU, memory/swap, uptime, network counters, and graphics presence.
 - Settings: persistent desktop background/accent colors.
 - Session: XDM login, XSecureLock lock/unlock, polite/cancellable logout and
-  separately confirmed force logout; see [X11 sessions](x11-sessions.md).
+  separately confirmed force logout, configurable idle locking, and supervised
+  X11 boot with native fallback; see [X11 sessions](x11-sessions.md).
 - Native DRM desktop and greeter: retained as the boot fallback.
 - Suspend/hibernate: unavailable in the current kernel; separate resume work.
 

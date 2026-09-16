@@ -1,14 +1,15 @@
-xlogin*greeting: WiiDesk
+xlogin*greeting: WiiDesk - US keyboard
 xlogin*namePrompt: Username:
 xlogin*passwdPrompt: Password:
-xlogin*fail: Sign-in failed
+xlogin*fail: Check username and password
+xlogin*failTimeout: 5
 xlogin*font: fixed
 xlogin*promptFont: fixed
 xlogin*greetFont: 9x15bold
 xlogin*failFont: fixed
 xlogin*face: monospace-12
 xlogin*promptFace: monospace-12
-xlogin*greetFace: sans-20:bold
+xlogin*greetFace: sans-16:bold
 xlogin*failFace: monospace-12
 xlogin*background: #244b59
 xlogin*foreground: #eef2f3

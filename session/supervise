@@ -1,0 +1,46 @@
+#!/bin/sh
+# Keep native DRM ownership and fallback separate from the X11 session lifecycle.
+set -eu
+base=/usr/local/lib/wiidesk-session
+status=/run/wiidesk-session.status
+child=
+fallback_reason='service stopped'
+cleanup() {
+    trap - EXIT INT TERM HUP
+    if [ -n "$child" ]; then
+        kill -TERM "$child" 2>/dev/null || true
+        wait "$child" 2>/dev/null || true
+    fi
+    printf 'native fallback: %s\n' "$fallback_reason" > "$status"
+    printf 'native fallback: %s\n' "$fallback_reason" >&2
+    busybox chvt 7 || true
+}
+trap cleanup EXIT
+trap 'exit 0' TERM INT HUP
+printf 'starting X11 login\n' > "$status"
+/usr/bin/xdm -nodaemon -config "$base/xdm-config" &
+child=$!
+misses=0
+ready=0
+while kill -0 "$child" 2>/dev/null; do
+    if "$base/check-display" >/dev/null 2>&1; then
+        misses=0
+        if [ "$ready" -eq 0 ]; then printf 'X11 ready\n' > "$status"; ready=1; fi
+    else
+        if [ "$ready" -eq 1 ]; then printf 'waiting for X11 recovery\n' > "$status"; ready=0; fi
+        misses=$((misses + 1))
+        if [ "$misses" -ge 6 ]; then
+            fallback_reason='display failed health checks; inspect /var/log/wiidesk-session.log'
+            exit 1
+        fi
+    fi
+    # Short waits let service-stop signals take effect without a long sleep.
+    count=0
+    while [ "$count" -lt 10 ] && kill -0 "$child" 2>/dev/null; do
+        sleep 2 &
+        wait $! || true
+        count=$((count + 1))
+    done
+done
+fallback_reason='display manager exited'
+exit 1

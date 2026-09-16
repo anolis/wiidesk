@@ -118,7 +118,8 @@ def main():
 
     # Discover and terminate only the sleep process created by this test. IDs
     # are selected by sorted PID rows, never by searching arbitrary process names.
-    victim = subprocess.Popen(['sleep', '120'])
+    # It must exit because of our TERM request, even on a slow test host.
+    victim = subprocess.Popen(['sleep', '86400'])
     try:
         processes = launch(5, '^WiiDesk Processes$')
         keys('F5', 'Home')

@@ -45,6 +45,47 @@ def main():
         close(session)
     finally:
         stop(wm)
+    # Input sent to another client must reset the server's idle timer.
+    config = pathlib.Path(os.environ['WIIDESK_TEST_HOME']) / '.config/wiidesk/x11.conf'
+    saved = config.read_text()
+    config.write_text('background=0\naccent=0\nidle_lock_seconds=2\n')
+    wm = start(1, '/bin/false')
+    editor_proc = None
+    try:
+        assert subprocess.run([str(build / 'wiidesk-session-health')]).returncode == 0
+        editor_proc = subprocess.Popen([str(build / 'wiidesk-x11-app'), 'editor'])
+        wait_for(lambda: windows('^WiiDesk Editor$'), 'idle test editor opens')
+        editor = windows('^WiiDesk Editor$')[0]
+        run('xdotool', 'windowactivate', '--sync', editor)
+        for _ in range(8):
+            run('xdotool', 'key', 'a')
+            time.sleep(.5)
+            assert wm.poll() is None, 'active client input must prevent automatic locking'
+        wm.wait(timeout=6)
+    finally:
+        stop(wm)
+        if editor_proc:
+            editor_proc.terminate()
+            editor_proc.wait(timeout=5)
+        config.write_text(saved)
+    config.write_text('background=0\naccent=0\nidle_lock_seconds=0\n')
+    wm = start(1, '/bin/false')
+    settings_proc = None
+    try:
+        time.sleep(3)
+        assert wm.poll() is None, 'disabled idle locking must not end the session'
+        config.write_text('background=0\naccent=0\nidle_lock_seconds=2\n')
+        settings_proc = subprocess.Popen([str(build / 'wiidesk-x11-app'), 'settings'])
+        wait_for(lambda: windows('^WiiDesk Settings$'), 'idle reload settings opens')
+        settings = windows('^WiiDesk Settings$')[0]
+        run('xdotool', 'windowactivate', '--sync', settings, 'key', 'Return')
+        wm.wait(timeout=6)
+    finally:
+        stop(wm)
+        if settings_proc:
+            settings_proc.terminate()
+            settings_proc.wait(timeout=5)
+        config.write_text(saved)
 
     wm = start(1, '/bin/true')
     children = []
@@ -91,7 +132,7 @@ def main():
         wm.wait(timeout=5)
     finally:
         stop(wm)
-    print('PASS: unmanaged logout guard, locker completion, dirty-editor logout/cancel/force, locker failure ends managed session')
+    print('PASS: logout guards/cancel/force, locker supervision, launcher lock, server idle timer and client activity, managed display health')
 
 
 if __name__ == '__main__':

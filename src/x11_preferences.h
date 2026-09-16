@@ -9,7 +9,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-struct preferences { unsigned int background, accent; };
+struct preferences { unsigned int background, accent, idle_lock_seconds; };
+static const unsigned int idle_lock_choices[] = {0, 60, 300, 600, 900, 1800};
 static const char *const background_names[] = { "Aqua", "Sunset", "Graphite" };
 static const char *const background_colors[] = { "#244b59", "#593b42", "#292f33" };
 static const char *const accent_names[] = { "Teal", "Sky", "Violet" };
@@ -36,7 +37,7 @@ static inline int preferences_path(char *path, size_t size, int create)
 static inline void preferences_load(struct preferences *p)
 {
     char path[PATH_MAX], line[128];
-    *p = (struct preferences){0, 0};
+    *p = (struct preferences){0, 0, 300};
     if (preferences_path(path, sizeof(path), 0)) return;
     FILE *f = fopen(path, "r");
     if (!f) return;
@@ -44,6 +45,7 @@ static inline void preferences_load(struct preferences *p)
     while (fgets(line, sizeof(line), f)) {
         if (sscanf(line, "background=%u", &value) == 1 && value < 3) p->background = value;
         if (sscanf(line, "accent=%u", &value) == 1 && value < 3) p->accent = value;
+        if (sscanf(line, "idle_lock_seconds=%u", &value) == 1 && value <= 86400) p->idle_lock_seconds = value;
     }
     fclose(f);
 }
@@ -58,7 +60,7 @@ static inline int preferences_save(const struct preferences *p)
     if (fd < 0) return -1;
     FILE *f = fdopen(fd, "w");
     if (!f) { int saved = errno; close(fd); unlink(temporary); errno = saved; return -1; }
-    int failed = fprintf(f, "background=%u\naccent=%u\n", p->background, p->accent) < 0;
+    int failed = fprintf(f, "background=%u\naccent=%u\nidle_lock_seconds=%u\n", p->background, p->accent, p->idle_lock_seconds) < 0;
     if (fflush(f) || fsync(fd)) failed = 1;
     if (fclose(f)) failed = 1;
     if (!failed && !rename(temporary, path)) return 0;

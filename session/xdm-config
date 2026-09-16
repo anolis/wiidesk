@@ -1,4 +1,4 @@
-! Isolated trial on :1 / VT9; does not replace the native boot service.
+! Managed display on :1 / VT9; native DRM remains the VT7 fallback.
 DisplayManager.requestPort: 0
 DisplayManager.pidFile: /run/wiidesk-xdm.pid
 DisplayManager.errorLogFile: /var/log/wiidesk-xdm.log
@@ -11,4 +11,8 @@ DisplayManager*resources: /usr/local/lib/wiidesk-session/Xresources
 DisplayManager*session: /usr/local/lib/wiidesk-session/Xsession
 DisplayManager*startup: /etc/X11/xdm/Xstartup
 DisplayManager*reset: /etc/X11/xdm/Xreset
-DisplayManager*setup:
+DisplayManager*setup: /usr/local/lib/wiidesk-session/Xsetup
+DisplayManager*openDelay: 2
+DisplayManager*openRepeat: 5
+DisplayManager*openTimeout: 20
+DisplayManager*startAttempts: 2

@@ -6,6 +6,7 @@
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
 #include <X11/cursorfont.h>
+#include <X11/extensions/scrnsaver.h>
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
@@ -14,6 +15,8 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
+#include <stdint.h>
 #include "x11_preferences.h"
 #include "x11_session.h"
 
@@ -55,6 +58,17 @@ static Window logout_requester;
 static pid_t locker_pid;
 static const char *locker = "/usr/bin/xsecurelock";
 static char session_status[160];
+static unsigned int idle_lock_seconds;
+static XScreenSaverInfo *idle_info;
+static uint64_t idle_next, idle_retry_after;
+static void close_menu(void);
+static void cancel_drag(void);
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 static void stop_handler(int signal_number) { (void)signal_number; stopping = 1; }
 static int xerror(Display *d, XErrorEvent *e)
@@ -252,6 +266,8 @@ static void session_publish(const char *status)
 static void session_lock(void)
 {
     if (locker_pid > 0) return;
+    close_menu(); cancel_drag(); XSync(display, False);
+    idle_retry_after = monotonic_ms() + (uint64_t)idle_lock_seconds * 1000;
     if (access(locker, X_OK)) { session_publish("Lock unavailable: install XSecureLock"); return; }
     locker_pid = fork();
     if (!locker_pid) {
@@ -263,6 +279,7 @@ static void session_lock(void)
         setenv("XSECURELOCK_FONT", "fixed", 1);
         setenv("XSECURELOCK_AUTH_CURSOR_BLINK", "0", 1);
         setenv("XSECURELOCK_PAM_SERVICE", "wiidesk-lock", 1);
+        setenv("XSECURELOCK_SHOW_KEYBOARD_LAYOUT", "1", 1);
         execl(locker, locker, (char *)NULL); _exit(127);
     }
     if (locker_pid < 0) { locker_pid = 0; session_publish("Lock could not start"); if (managed_session) stopping = 1; }
@@ -290,6 +307,7 @@ static void session_tick(void)
     while ((child = waitpid(-1, &status, WNOHANG)) > 0) {
         if (child != locker_pid) continue;
         locker_pid = 0;
+        idle_retry_after = monotonic_ms() + (uint64_t)idle_lock_seconds * 1000;
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0) session_publish("Unlocked");
         else {
             session_publish(managed_session ? "Lock failed; ending session" : "Lock failed; session is NOT locked");
@@ -302,6 +320,18 @@ static void session_tick(void)
     int remaining = 0;
     for (int i = 0; i < CLIENTS; i++) if (clients[i].window && clients[i].window != logout_requester) remaining++;
     if (!remaining) stopping = 1;
+}
+static void idle_tick(void)
+{
+    uint64_t now = monotonic_ms();
+    if (!managed_session || !idle_info || !idle_lock_seconds || locker_pid || stopping || now < idle_next) return;
+    idle_next = now + 1000;
+    if (!XScreenSaverQueryInfo(display, root, idle_info)) {
+        session_publish("Automatic lock unavailable: cannot read X11 idle time");
+        XFree(idle_info); idle_info = NULL; return;
+    }
+    if (now >= idle_retry_after && idle_info->idle >= (unsigned long)idle_lock_seconds * 1000)
+        session_lock();
 }
 static void update_title(struct client *c)
 {
@@ -410,6 +440,9 @@ static void open_menu(Time time)
 static void apply_preferences(void)
 {
     struct preferences p; preferences_load(&p);
+    if (idle_lock_seconds != p.idle_lock_seconds)
+        idle_retry_after = monotonic_ms() + (uint64_t)p.idle_lock_seconds * 1000;
+    idle_lock_seconds = p.idle_lock_seconds;
     unsigned long old[] = { background, accent };
     background = color(background_colors[p.background]); accent = color(accent_colors[p.accent]);
     XSetWindowBackground(display, root, background); XClearWindow(display, root);
@@ -467,7 +500,7 @@ static void key(XKeyEvent *e)
 {
     KeySym sym = XLookupKeysym(e, 0);
     if ((e->state & (ControlMask | Mod1Mask)) == (ControlMask | Mod1Mask) && sym == XK_l) {
-        close_menu(); cancel_drag(); XSync(display, False); session_lock(); return;
+        session_lock(); return;
     }
     if (menu_open) {
         if (sym == XK_Escape) close_menu();
@@ -607,6 +640,13 @@ int main(int argc, char **argv)
     if (getenv("WIIDESK_LOCKER") && getenv("WIIDESK_LOCKER")[0] == '/') locker = getenv("WIIDESK_LOCKER");
     session_publish(managed_session ? "Signed in" : "Manual X11 session");
     struct preferences p; preferences_load(&p);
+    idle_lock_seconds = p.idle_lock_seconds;
+    if (managed_session) {
+        int event_base, error_base;
+        if (XScreenSaverQueryExtension(display, &event_base, &error_base)) idle_info = XScreenSaverAllocInfo();
+        if (!idle_info) session_publish("Automatic lock unavailable: XScreenSaver extension missing");
+        idle_retry_after = monotonic_ms() + (uint64_t)idle_lock_seconds * 1000;
+    }
     background = color(background_colors[p.background]); foreground = color("#f0f4f5"); muted = color("#aabdc3");
     accent = color(accent_colors[p.accent]); border = color("#263137");
     XSetWindowBackground(display, root, background); XClearWindow(display, root);
@@ -655,12 +695,14 @@ int main(int argc, char **argv)
     while (!stopping) {
         while (XPending(display) && !stopping) { XEvent e; XNextEvent(display, &e); event(&e); }
         session_tick();
+        idle_tick();
         XFlush(display);
         struct pollfd p = { .fd = ConnectionNumber(display), .events = POLLIN };
         if (poll(&p, 1, 200) < 0 && errno != EINTR) break;
         if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) break;
     }
     close_menu(); cancel_drag();
+    if (idle_info) XFree(idle_info);
     for (int i = 0; i < CLIENTS; i++) if (clients[i].window) {
         Window w = clients[i].window; unmanage(&clients[i], 0); XMapWindow(display, w);
     }

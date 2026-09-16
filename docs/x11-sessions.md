@@ -11,6 +11,14 @@ session, WiiDesk exits so XDM resets that session. This can discard unsaved work
 it prevents a locker failure from silently returning to an unlocked desktop.
 The UI reports a lock request, not proof that the lock has taken effect.
 
+Managed sessions automatically lock after **five minutes without input** by
+default. Settings offers Off, 1, 5, 10, 15, and 30 minutes. Save applies the
+change immediately. Keyboard and pointer activity anywhere on this X server
+count, including inside ordinary apps. A once-per-second XScreenSaver query
+reads the server's idle timer; no extra idle daemon is needed. Manual sessions
+do not autolock. The underlying `idle_lock_seconds` preference also accepts
+0–86400 seconds, with zero disabling the timer.
+
 **Log out** asks applications to close. Applications with unsaved work can keep
 the session open while you save. **Cancel logout** stops waiting, but cannot
 reopen applications that already closed. **Force logout** requires a second
@@ -24,12 +32,16 @@ Suspend and hibernate are unavailable on the current Wii kernel:
 The architecture's `CONFIG_ARCH_HIBERNATION_POSSIBLE=y` is not working suspend
 or hibernation support. Enabling those features would require separate kernel,
 driver resume, storage, and hardware validation. No sleep command is issued.
+See the [Wii power-management assessment](wii-power-management.md) for the
+specific source/configuration blockers and a staged investigation plan.
 
-## Isolated hardware trial
+## Installation and boot
 
-The trial uses display **:1 on VT9**. The earlier desktop on :0/VT8 and native
-DRM greeter on VT7 stay running. The native boot service is not replaced.
-Do not stop that service while testing X11: it also controls DRM ownership.
+Managed X11 uses display **:1 on VT9**. The native service prepares DRM and
+keeps its greeter available on VT7. The separate `wiidesk-session` service starts
+after it and stops before it during shutdown. The earlier manual desktop on
+:0/VT8 is left running during installation. Do not stop the native service to
+restart X11: it also controls DRM ownership.
 
 Resolve dependencies against the Wii's dpkg status and download packages on the
 host. Transfer the complete `.deb` directory to the Wii. From the transferred
@@ -38,31 +50,57 @@ only `dpkg`, temporarily inhibits service starts, disables XDM boot startup, and
 restores the prior default-display-manager and policy files. Its backup
 directory is printed. Inspect installation errors before continuing.
 
-Build the PowerPC WM and companion app as described in [x11.md](x11.md). Transfer
-`session/`, `build/x11/wiidesk-x11`, and `build/x11/wiidesk-x11-app` together, then
-run `sh session/install-trial.sh` from that archive directory as root. It installs
+Build as described in [x11.md](x11.md). Transfer `session/` and the three binaries
+`build/x11/wiidesk-x11`, `build/x11/wiidesk-x11-app`, and
+`build/x11/wiidesk-session-health` together. Run `sh session/install-boot.sh`
+from that archive directory as root. It installs
 root-owned binaries/configuration under `/usr/local/lib/wiidesk-session` and the
-`wiidesk-lock` PAM policy. Start explicitly:
+`wiidesk-lock` PAM policy, then enables the separate SysV service at boot. The
+stock `xdm` service remains disabled to avoid competing display managers.
+
+Stop an older manual XDM trial before starting the service; the service refuses
+to take over an already-running manual trial. Normal service commands are:
 
 ```sh
-/usr/bin/xdm -config /usr/local/lib/wiidesk-session/xdm-config
+/etc/init.d/wiidesk-session start
+/etc/init.d/wiidesk-session status
+# Save work and log out before stopping/restarting this service.
+/etc/init.d/wiidesk-session stop
 ```
 
 Enter an ordinary local account name, press Enter (or Tab), then enter its
 password and press Enter. The password prompt appears after submitting the
 username. XDM's PAM stack applies
 the system authentication/account/session policy. There is no autologin or
-password storage in WiiDesk. The trial does not change existing passwords.
+password storage in WiiDesk. Installation does not change existing passwords.
+The supplied Xorg configuration uses a US keyboard layout, indicated on the
+greeter; the locker also displays the layout. If an administrator changes the
+Xorg keyboard layout, update the greeter label to match.
 
-To stop this trial, first save all work in its session, then as root:
+The supervisor checks for a responsive X server and either the XDM greeter or
+a managed WiiDesk session every 20 seconds. Each probe has a five-second limit.
+If XDM exits, or six consecutive probes fail (roughly two minutes), it stops the
+test display and switches back to VT7. It does not repeatedly restart a broken
+display configuration. Inspect `/run/wiidesk-session.status`,
+`/var/log/wiidesk-session.log`, and the XDM/Xorg logs before restarting it.
+This detects startup/display-manager failures, not every possible application
+or window-manager hang.
+
+To persistently bypass X11 at boot and return to the native desktop:
 
 ```sh
-kill -TERM "$(cat /run/wiidesk-xdm.pid)"
-busybox chvt 8
+touch /etc/wiidesk-native-only
+/etc/init.d/wiidesk-session stop
 ```
 
-This ends **only the trial session** and returns to the earlier X11 desktop.
-`busybox chvt 7` returns to the native greeter. No boot enablement is performed.
+Remove that marker and start the service to re-enable X11. A kernel command-line
+argument `wiidesk.native=1` also bypasses X11. `busybox chvt 8` returns to the
+earlier manual desktop while it exists; `busybox chvt 7` selects the native one.
+Stopping the X11 service ends that session's apps, so save work first.
+
+For a manual-only trial, `sh session/install-trial.sh` installs the payload
+without enabling boot startup. With the service stopped, run
+`/usr/bin/xdm -config /usr/local/lib/wiidesk-session/xdm-config` explicitly.
 
 ## Boundaries and validation
 
@@ -73,7 +111,7 @@ X11 session; it does not revoke existing SSH access, protect other logged-in
 consoles, or prevent a privileged administrator from terminating it. Programs
 already trusted with this X server share X11's security boundary.
 
-There is no idle autolock, fast user switching, keyring integration, or sleep
+There is no fast user switching, keyring integration, or sleep
 resume path yet. XDM owns the login screen in this first integration, rather
 than the native WiiDesk greeter. The account name and password are entered with
 the configured X keyboard layout.
@@ -92,7 +130,7 @@ authentication helpers and failure behavior; upstream was archived in April
 2026, so future maintenance should track the Debian package and alternatives.
 XDM behavior follows the [Debian manual](https://manpages.debian.org/testing/xdm/xdm.1.en.html).
 
-## Hardware results, 2026-09-16
+## Initial login/lock integration results, 2026-09-16
 
 The full host suite passed, including locking while the launcher owns the
 keyboard: WiiDesk releases its own grabs before starting the locker. Host and
@@ -106,7 +144,8 @@ server with a fresh greeter. An authorization file saved before logout was
 rejected by the responsive new server. The greeter access-control shortcut was
 also checked with `xhost` before and after the key sequence.
 
-The final installed PowerPC binaries were verified against the host hashes:
+The initial integration binaries were verified against the host hashes (the
+later boot/idle-lock build is listed below):
 
 ```text
 51b119066f39d9a11bb71f9d46550791860ba1f5fab836f0d03c8df214e51a6d  wiidesk-x11
@@ -127,3 +166,53 @@ visually checked through the capture feed. Authentication input was automated
 through XTEST; physical keyboard interaction is not independently verified.
 This is functional integration testing, not a security audit of Xorg, XDM, PAM,
 or the packaged locker. Native boot and the earlier desktop are retained.
+
+## Boot and automatic-lock follow-up
+
+The supervised service is installed and enabled in runlevels 2–5. On the Wii,
+startup order is `S01wiidesk` then `S02wiidesk-session`; shutdown order is
+`K01wiidesk-session` then `K02wiidesk`. Stock XDM remains disabled. Debian's
+helper printed a systemd-unit warning on this SysV machine; actual SysV links
+and service operation were verified. Repeating `start` is harmless, and the
+PID check matches the supervisor name before stopping a process.
+
+Hardware checks passed for display-manager termination, failed X server
+startup, six consecutive health-probe failures, and the native-only marker.
+Each failure returned to the running native desktop on VT7. The recovery test
+restored the working server/probe configuration and restarted the greeter.
+`sh tests/wii-session-recovery.sh --run` refuses an active managed WiiDesk session
+and restores its temporary configuration changes on exit.
+
+A disposable account with a one-minute timeout locked without any lock
+shortcut. Password unlock and subsequent logout passed. XTEST attempts at
+Ctrl+Alt+F7 and Ctrl+Alt+Backspace left the same server and VT active while
+locked. `tests/wii-idle-lock.sh` covers this sequence and removes its account
+and password afterward. The native desktop and earlier manual X11 apps were
+preserved.
+The final greeter's background, text contrast, and US-keyboard label were
+visually checked through the live VLC capture.
+
+Host tests cover client activity preventing idle lock, timeout changes saved
+and reloaded in Settings, disabled automatic locking, and enabling it in an
+already-running session. Host and PowerPC builds pass with warnings treated as
+errors; the shell scripts pass ShellCheck. The new dependency is libXss (already
+installed on the Wii); development files were extracted on the host only.
+
+Current PowerPC hashes:
+
+```text
+3182c97111c711189d3e0a064aad222de5cd002c641b96c423dbccbcfdb769cf  wiidesk-x11
+a212116b955a5314233f7b6f76b961cc5df5ddde601c12231679ba89a80dc031  wiidesk-x11-app
+b57ae42e1a5c0b05856cf481e25a6de60c3b0fb9451d712ccbc5cfd054def5cf  wiidesk-session-health
+```
+
+Artifacts: `/media/anolis/dev/wiidesk-x11-boot-20260916` on the host and
+`/var/tmp/wiidesk-x11-boot-20260916` on the Wii. The previous session payload is
+saved as `previous-session` in the Wii artifact directory.
+
+Pending verification is a real cold boot and hands-on keyboard testing.
+The Wii was not rebooted because the earlier desktop still has open apps.
+Physical checks should cover username/password entry, Caps Lock, lock/unlock,
+VT/zap shortcuts, and login after a full power cycle. Automated input does not
+substitute for those checks. Suspend/hibernate remain unavailable for the
+reasons in [the power-management assessment](wii-power-management.md).

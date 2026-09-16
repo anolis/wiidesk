@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+server=$(tr -d ' \n' < /tmp/.X1-lock)
+case "$server" in ''|*[!0-9]*) exit 1;; esac
+case $(readlink "/proc/$server/exe") in */Xorg) ;; *) exit 1;; esac
+XAUTHORITY=$(tr '\0' '\n' < "/proc/$server/cmdline" | awk 'nextauth {print; exit} $0 == "-auth" {nextauth=1}')
+case "$XAUTHORITY" in /var/lib/xdm/authdir/authfiles/*) ;; *) exit 1;; esac
+export XAUTHORITY DISPLAY=:1
+exec /usr/local/lib/wiidesk-session/wiidesk-session-health

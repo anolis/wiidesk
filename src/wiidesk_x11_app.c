@@ -423,16 +423,18 @@ static void draw(void)
         for (int i = 0; i < 7; i++) text(16, 60 + i * 30, system_lines[i], i % 2 ? muted : foreground);
         text(16, height - 14, "Updates once per second while visible", muted);
     } else if (app == SETTINGS) {
-        text(16, 28, "Desktop appearance", foreground);
-        for (int i = 0; i < 2; i++) {
+        text(16, 28, "Appearance and session", foreground);
+        for (int i = 0; i < 3; i++) {
             rectangle(12, 48 + i * 38, width - 24, 30, setting_row == i ? accent : surface);
             char label[128];
-            snprintf(label, sizeof(label), "%s:  < %s >", i ? "Accent    " : "Background", i ? accent_names[prefs.accent] : background_names[prefs.background]);
+            if (i < 2) snprintf(label, sizeof(label), "%s:  < %s >", i ? "Accent    " : "Background", i ? accent_names[prefs.accent] : background_names[prefs.background]);
+            else if (!prefs.idle_lock_seconds) strcpy(label, "Idle lock :  < Off >");
+            else snprintf(label, sizeof(label), "Idle lock :  < %u seconds >", prefs.idle_lock_seconds);
             text(22, 68 + i * 38, label, foreground);
         }
-        ui_button(&shared_ui, 12, 140, 140, "Save and apply", setting_row == 2);
-        text(16, 198, "Arrows change colors; Tab selects Save", muted);
-        text(16, 220, "Enter saves; Escape closes", muted);
+        ui_button(&shared_ui, 12, 178, 140, "Save and apply", setting_row == 3);
+        text(16, 228, "Arrows change; Tab selects; Enter saves", muted);
+        text(16, 250, "Idle lock applies to managed X11 sessions", muted);
         text(16, height - 16, status, muted);
     } else if (app == EDITOR) {
         ui_button(&shared_ui, 8, 8, 64, "Open", 0);
@@ -499,6 +501,12 @@ static void change_setting(int direction)
 {
     unsigned int *v = setting_row ? &prefs.accent : &prefs.background;
     if (setting_row < 2) { *v = (*v + (direction < 0 ? 2 : 1)) % 3; strcpy(status, "Unsaved changes"); }
+    else if (setting_row == 2) {
+        int i = 0, count = sizeof(idle_lock_choices) / sizeof(idle_lock_choices[0]);
+        while (i < count - 1 && idle_lock_choices[i] < prefs.idle_lock_seconds) i++;
+        prefs.idle_lock_seconds = idle_lock_choices[(i + (direction < 0 ? count - 1 : 1)) % count];
+        strcpy(status, "Unsaved changes");
+    }
 }
 static void key(XKeyEvent *e)
 {
@@ -565,8 +573,8 @@ static void key(XKeyEvent *e)
         }
         last_click = -1;
     } else if (app == SETTINGS) {
-        if (k == XK_Tab || k == XK_Down) setting_row = (setting_row + 1) % 3;
-        if (k == XK_Up) setting_row = (setting_row + 2) % 3;
+        if (k == XK_Tab || k == XK_Down) setting_row = (setting_row + 1) % 4;
+        if (k == XK_Up) setting_row = (setting_row + 3) % 4;
         if (k == XK_Left || k == XK_Right || k == XK_space) change_setting(k == XK_Left ? -1 : 1);
         if (k == XK_Return) save_settings();
     }
@@ -629,8 +637,8 @@ static void button(XButtonEvent *e)
             }
         }
     } else if (app == SETTINGS && e->button == Button1) {
-        if (e->y >= 48 && e->y < 116) { setting_row = (e->y - 48) / 38; change_setting(1); }
-        else if (e->x >= 12 && e->x < 152 && e->y >= 140 && e->y < 168) save_settings();
+        if (e->y >= 48 && e->y < 154) { setting_row = (e->y - 48) / 38; change_setting(1); }
+        else if (e->x >= 12 && e->x < 152 && e->y >= 178 && e->y < 206) save_settings();
     }
     dirty = 1;
 }

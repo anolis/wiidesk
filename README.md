@@ -72,11 +72,12 @@ user under Xorg and refuses to start if another window manager owns the display.
 make CROSS_COMPILE= BUILD_DIR=build/host wiidesk-x11 x11-test-client
 ```
 
-This build requires Xlib development headers and libraries. See
+This build requires Xlib and XScreenSaver development headers and libraries. See
 [X11 build, session, and tests](docs/x11.md) for PowerPC cross builds and isolated
-testing. The native DRM build and boot session remain unchanged. The X11
+testing. The native DRM build remains the fallback. The X11
 implementation remains experimental; [managed X11 sessions](docs/x11-sessions.md)
-add XDM login, password lock/unlock, and logout in an isolated trial. Suspend and
+add XDM login at boot, password lock/unlock, configurable idle locking, and
+logout, with supervised recovery to the native desktop. Suspend and
 hibernate are unavailable in the current kernel. Install both `wiidesk-x11` and `wiidesk-x11-app`
 in the same directory.
 

@@ -6,18 +6,21 @@ trial=/var/tmp/wiidesk-x11-session-20260916
 account=wiidesk-session-test
 export DISPLAY=:1
 case ${1:-} in
-prepare)
-    ! id "$account" >/dev/null 2>&1
+prepare|prepare-account)
+    if id "$account" >/dev/null 2>&1; then
+        echo 'Refusing to reuse an existing test account' >&2
+        exit 1
+    fi
     umask 077
     useradd -m -s /bin/sh "$account"
     od -An -N18 -tx1 /dev/urandom | tr -d ' \n' > "$trial/test-password"
     { printf '%s:' "$account"; cat "$trial/test-password"; printf '\n'; } | chpasswd
-    /usr/bin/xdm -config /usr/local/lib/wiidesk-session/xdm-config
+    if [ "$1" = prepare ]; then /usr/bin/xdm -config /usr/local/lib/wiidesk-session/xdm-config; fi
     ;;
 cleanup)
     usermod -L "$account"
-    userdel "$account"
     rm -f "$trial/test-password" "$trial/previous-auth"
+    userdel "$account"
     # Leave the disposable home for inspecting test logs, never remove recursively.
     ;;
 *)
@@ -43,6 +46,16 @@ cleanup)
         xdotool key Return
         ;;
     open-system) xdotool key --clearmodifiers alt+F1 Down Down Return ;;
+    is-locked) xprop -root _WIIDESK_SESSION_CAPS | grep -q ', 1$' ;;
+    is-unlocked) xprop -root _WIIDESK_SESSION_CAPS | grep -q '= 1, 1, 0, 0$' ;;
+    vt-shortcuts)
+        before=$(cat /sys/class/tty/tty0/active)
+        xdotool key --clearmodifiers ctrl+alt+F7 ctrl+alt+BackSpace
+        sleep 1
+        test "$(cat /sys/class/tty/tty0/active)" = "$before"
+        kill -0 "$server"
+        echo 'PASS: XTEST VT-switch and server-zap shortcuts leave this X server active'
+        ;;
     remember-auth)
         umask 077
         cp "$XAUTHORITY" "$trial/previous-auth"
