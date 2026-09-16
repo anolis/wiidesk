@@ -1,0 +1,38 @@
+xlogin*greeting: WiiDesk
+xlogin*namePrompt: Username:
+xlogin*passwdPrompt: Password:
+xlogin*fail: Sign-in failed
+xlogin*font: fixed
+xlogin*promptFont: fixed
+xlogin*greetFont: 9x15bold
+xlogin*failFont: fixed
+xlogin*face: monospace-12
+xlogin*promptFace: monospace-12
+xlogin*greetFace: sans-20:bold
+xlogin*failFace: monospace-12
+xlogin*background: #244b59
+xlogin*foreground: #eef2f3
+xlogin*promptColor: #eef2f3
+xlogin*greetColor: #eef2f3
+xlogin*failColor: #ffb89c
+xlogin*inpColor: #17333d
+xlogin*hiColor: #6c9eae
+xlogin*shdColor: #17333d
+xlogin*borderWidth: 0
+xlogin*frameWidth: 2
+xlogin*innerFramesWidth: 1
+xlogin*useShape: false
+xlogin*allowRootLogin: false
+xlogin*allowNullPasswd: false
+! Replace defaults to omit the allow-all-access shortcut.
+xlogin*login.translations: #replace\n\
+    Ctrl<Key>H: delete-previous-character()\n\
+    Ctrl<Key>A: move-to-begining()\n\
+    Ctrl<Key>E: move-to-end()\n\
+    Ctrl<Key>U: erase-line()\n\
+    Ctrl<Key>K: erase-to-end-of-line()\n\
+    <Key>BackSpace: delete-previous-character()\n\
+    <Key>Delete: delete-character()\n\
+    <Key>Return: finish-field()\n\
+    <Key>Tab: finish-field()\n\
+    <Key>: insert-char()

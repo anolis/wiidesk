@@ -1,0 +1,3 @@
+# Authentication is delegated to Debian's configured PAM stack.
+@include common-auth
+@include common-account

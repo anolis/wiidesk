@@ -30,8 +30,10 @@ buttons, dialogs, clipboard, and consistent keyboard navigation.
 - Terminal: uses xterm in the X11 session.
 - System: live CPU, memory/swap, uptime, network counters, and graphics presence.
 - Settings: persistent desktop background/accent colors.
-- Native DRM desktop and greeter: retained; X11 login, lock, and logout
-  integration remain separate future session work.
+- Session: XDM login, XSecureLock lock/unlock, polite/cancellable logout and
+  separately confirmed force logout; see [X11 sessions](x11-sessions.md).
+- Native DRM desktop and greeter: retained as the boot fallback.
+- Suspend/hibernate: unavailable in the current kernel; separate resume work.
 
 ## Constraints and completion criteria
 

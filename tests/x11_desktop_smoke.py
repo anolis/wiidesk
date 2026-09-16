@@ -113,7 +113,8 @@ def main():
     # Click the panel and select Files with the pointer.
     run('xdotool', 'mousemove', '30', '466', 'click', '1')
     wait_for(lambda: windows('^WiiDesk Launcher$'), 'panel opens launcher')
-    run('xdotool', 'mousemove', '35', '315', 'click', '1')
+    menu = windows('^WiiDesk Launcher$')[0]
+    run('xdotool', 'mousemove', '--window', menu, '31', '49', 'click', '1')
     wait_for(lambda: windows('^WiiDesk Files'), 'mouse launches Files')
     close(windows('^WiiDesk Files')[0])
     print('PASS: launcher keyboard/mouse, Files navigation, System hide/restore, Settings persistence, polite close')

@@ -1,0 +1,1 @@
+:1 local /usr/lib/xorg/Xorg :1 vt9 -config /usr/local/lib/wiidesk-session/xorg.conf -nolisten tcp -noreset -logfile /var/log/wiidesk-Xorg.1.log

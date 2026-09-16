@@ -64,8 +64,8 @@ The planned core application suite and its implementation status are tracked in
 
 The optional `wiidesk-x11` executable manages ordinary X11 applications itself.
 It provides window frames, click-to-focus, outline move/resize, minimize,
-maximize, close, a task panel, and a launcher for Terminal, Files, System, and
-Settings. The built-in desktop apps run as ordinary X11 clients. It runs as the session
+maximize, close, a task panel, and a launcher for Terminal, Files, System,
+Settings, Editor, Processes, and Session. The built-in apps run as ordinary X11 clients. It runs as the session
 user under Xorg and refuses to start if another window manager owns the display.
 
 ```sh
@@ -75,8 +75,9 @@ make CROSS_COMPILE= BUILD_DIR=build/host wiidesk-x11 x11-test-client
 This build requires Xlib development headers and libraries. See
 [X11 build, session, and tests](docs/x11.md) for PowerPC cross builds and isolated
 testing. The native DRM build and boot session remain unchanged. The X11
-implementation remains experimental; login, lock, and logout integration still
-belong to the native session. Install both `wiidesk-x11` and `wiidesk-x11-app`
+implementation remains experimental; [managed X11 sessions](docs/x11-sessions.md)
+add XDM login, password lock/unlock, and logout in an isolated trial. Suspend and
+hibernate are unavailable in the current kernel. Install both `wiidesk-x11` and `wiidesk-x11-app`
 in the same directory.
 
 ## Source Layout

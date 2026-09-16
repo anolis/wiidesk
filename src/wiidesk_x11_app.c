@@ -20,6 +20,8 @@
 #include "x11_preferences.h"
 #include "x11_controls.h"
 #include "x11_app_io.h"
+#include "x11_session.h"
+#include <pwd.h>
 
 #define ENTRIES 512
 #define ROW 22
@@ -31,7 +33,10 @@ static Atom wm_delete, wm_protocols;
 static int width = 460, height = 330, visible = 1, dirty = 1;
 static volatile sig_atomic_t stopping;
 static unsigned long foreground, muted, surface, accent;
-static enum { FILES, SYSTEM, SETTINGS, EDITOR, PROCESSES } app;
+static enum { FILES, SYSTEM, SETTINGS, EDITOR, PROCESSES, SESSION } app;
+static unsigned long session_caps[4];
+static int session_row;
+static char session_user[64];
 static struct ui shared_ui;
 static struct ui_text editor_text;
 static struct ui_list process_list;
@@ -42,7 +47,7 @@ static int process_count, editor_top;
 static struct document_stamp editor_stamp;
 static struct ui_text dialog_text;
 static int dialog_top;
-static enum { D_NONE, D_OPEN, D_SAVE, D_FIND, D_CLOSE, D_DISCARD_OPEN, D_MKDIR, D_RENAME, D_COPY, D_MOVE, D_TRASH, D_TERM, D_FOLDER } dialog;
+static enum { D_NONE, D_OPEN, D_SAVE, D_FIND, D_CLOSE, D_DISCARD_OPEN, D_MKDIR, D_RENAME, D_COPY, D_MOVE, D_TRASH, D_TERM, D_FOLDER, D_LOGOUT, D_FORCE_LOGOUT } dialog;
 static char dialog_label[160], op_source[PATH_MAX];
 static struct stat op_stamp;
 static int process_fd = -1;
@@ -260,7 +265,29 @@ static int editor_save(const char *path)
     editor_stamp = after; memmove(editor_path, path, strlen(path) + 1);
     editor_text.modified = 0; snprintf(status, sizeof(status), "Saved %zu bytes", editor_text.length); return 0;
 }
-static int confirmation(void) { return dialog == D_CLOSE || dialog == D_DISCARD_OPEN || dialog == D_TRASH || dialog == D_TERM; }
+static void session_refresh(void)
+{
+    Atom type; int format; unsigned long n, left; unsigned char *data = NULL;
+    memset(session_caps, 0, sizeof(session_caps));
+    if (XGetWindowProperty(display, DefaultRootWindow(display), XInternAtom(display, SESSION_CAPS, False), 0, 4, False, XA_CARDINAL, &type, &format, &n, &left, &data) == Success && format == 32 && n == 4)
+        memcpy(session_caps, data, sizeof(session_caps));
+    if (data) XFree(data);
+    data = NULL;
+    if (XGetWindowProperty(display, DefaultRootWindow(display), XInternAtom(display, SESSION_STATUS, False), 0, 40, False, AnyPropertyType, &type, &format, &n, &left, &data) == Success && format == 8 && n) {
+        size_t length = n < sizeof(status) - 1 ? n : sizeof(status) - 1;
+        memcpy(status, data, length); status[length] = 0;
+    }
+    if (data) XFree(data);
+}
+static void session_send(int action)
+{
+    XEvent e = {0}; e.xclient.type = ClientMessage; e.xclient.window = window;
+    e.xclient.message_type = XInternAtom(display, SESSION_ACTION, False); e.xclient.format = 32;
+    e.xclient.data.l[0] = action;
+    XSendEvent(display, DefaultRootWindow(display), False, SubstructureRedirectMask | SubstructureNotifyMask, &e);
+    XFlush(display);
+}
+static int confirmation(void) { return dialog == D_CLOSE || dialog == D_DISCARD_OPEN || dialog == D_TRASH || dialog == D_TERM || dialog == D_LOGOUT || dialog == D_FORCE_LOGOUT; }
 static void begin_dialog(int action, const char *label, const char *value)
 {
     ui_clipboard_cancel(&shared_ui); dialog = action; dialog_top = 0;
@@ -277,6 +304,19 @@ static void end_dialog(void)
     ui_clipboard_cancel(&shared_ui); dialog = D_NONE;
     if (process_fd >= 0) close(process_fd);
     process_fd = -1; dirty = 1;
+}
+static void session_activate(int row)
+{
+    if (row == 0) {
+        if (session_caps[1]) session_send(SESSION_LOCK);
+        else strcpy(status, "Lock is unavailable: XSecureLock is missing");
+    } else if (row == 1) {
+        if (session_caps[0]) begin_dialog(D_LOGOUT, "Close applications and log out?", "");
+        else strcpy(status, "Sign in through WiiDesk to enable logout");
+    } else if (row == 2 && session_caps[2]) session_send(SESSION_CANCEL_LOGOUT);
+    else if (row == 3 && session_caps[2]) begin_dialog(D_FORCE_LOGOUT, "Discard unsaved work and force logout?", "");
+    else if (row >= 4) strcpy(status, access("/sys/power/state", F_OK) ? "This kernel has no suspend/hibernate interface" : "Sleep support is not enabled for this Wii session");
+    dirty = 1;
 }
 static void request_close(void)
 {
@@ -317,6 +357,9 @@ static void process_action(void)
 static void accept_dialog(void)
 {
     int action = dialog; char target[PATH_MAX];
+    if (action == D_LOGOUT || action == D_FORCE_LOGOUT) {
+        end_dialog(); session_send(action == D_LOGOUT ? SESSION_LOGOUT : SESSION_FORCE_LOGOUT); return;
+    }
     if (action == D_CLOSE) { end_dialog(); stopping = 1; return; }
     if (action == D_DISCARD_OPEN) { begin_dialog(D_OPEN, "Open text file (up to 256 KiB)", editor_path); return; }
     if (action == D_TERM) {
@@ -400,6 +443,20 @@ static void draw(void)
         ui_text_draw(&shared_ui, &editor_text, 12, 64, width - 24, height - 110, &editor_top, 1);
         text(12, height - 30, editor_text.modified ? "Unsaved | Ctrl+A/C/X/V/Z; Shift+arrows select" : "Ctrl+O/S/F | Ctrl+A/C/X/V/Z; Shift selects", muted);
         text(12, height - 12, status, muted);
+    } else if (app == SESSION) {
+        char account[100]; snprintf(account, sizeof(account), "WiiDesk session: %s", session_user);
+        text(16, 28, account, foreground);
+        ui_button(&shared_ui, 12, 46, 212, session_caps[1] ? "Lock now" : "Lock unavailable", session_row == 0);
+        ui_button(&shared_ui, 12, 80, 212, session_caps[0] ? "Log out..." : "Log out unavailable", session_row == 1);
+        if (session_caps[2]) {
+            ui_button(&shared_ui, 12, 114, 168, "Cancel logout", session_row == 2);
+            ui_button(&shared_ui, 190, 114, 184, "Force logout...", session_row == 3);
+        }
+        ui_button(&shared_ui, 12, 158, 292, "Suspend unavailable", session_row == 4);
+        ui_button(&shared_ui, 12, 192, 292, "Hibernate unavailable", session_row == 5);
+        text(16, 242, "Ctrl+Alt+L locks; password unlocks", muted);
+        text(16, height - 36, "Save your work before logging out", muted);
+        text(16, height - 14, status, muted);
     } else {
         unsigned long pid = process_count ? (unsigned long)processes[process_list.selected].pid : 0;
         XChangeProperty(display, window, XInternAtom(display, "_WIIDESK_SELECTED_PID", False), XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&pid, 1);
@@ -458,7 +515,15 @@ static void key(XKeyEvent *e)
         dirty = 1; return;
     }
     if (k == XK_Escape) { request_close(); return; }
-    if (app == EDITOR) {
+    if (app == SESSION) {
+        if (k == XK_Up || k == XK_Down || k == XK_Tab) {
+            int step = k == XK_Up ? 5 : 1;
+            do { session_row = (session_row + step) % 6; }
+            while (!session_caps[2] && (session_row == 2 || session_row == 3));
+        }
+        if (k == XK_Return || k == XK_space) session_activate(session_row);
+        dirty = 1; return;
+    } else if (app == EDITOR) {
         if ((e->state & ControlMask) && (k == XK_s || k == XK_S)) {
             if (!editor_path[0] || (e->state & ShiftMask)) begin_dialog(D_SAVE, "Save to new file (no overwrite)", editor_path);
             else editor_save(editor_path);
@@ -518,6 +583,14 @@ static void button(XButtonEvent *e)
         }
         dirty = 1; return;
     }
+    if (app == SESSION && e->button == Button1) {
+        if (ui_hit(e->x, e->y, 12, 46, 212, 24)) session_activate(0);
+        else if (ui_hit(e->x, e->y, 12, 80, 212, 24)) session_activate(1);
+        else if (ui_hit(e->x, e->y, 12, 114, 168, 24)) session_activate(2);
+        else if (ui_hit(e->x, e->y, 190, 114, 184, 24)) session_activate(3);
+        else if (ui_hit(e->x, e->y, 12, 158, 292, 24)) session_activate(4);
+        else if (ui_hit(e->x, e->y, 12, 192, 292, 24)) session_activate(5);
+    }
     if (app == EDITOR && e->button == Button1) {
         if (ui_hit(e->x, e->y, 8, 8, 64, 24)) {
             if (editor_text.modified) begin_dialog(D_DISCARD_OPEN, "Discard unsaved changes and open another file?", "");
@@ -563,16 +636,16 @@ static void button(XButtonEvent *e)
 }
 int main(int argc, char **argv)
 {
-    if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[1], "editor")) || (strcmp(argv[1], "files") && strcmp(argv[1], "system") && strcmp(argv[1], "settings") && strcmp(argv[1], "editor") && strcmp(argv[1], "processes"))) {
-        fprintf(stderr, "Usage: %s files|system|settings|processes|editor [FILE]\n", argv[0]); return 1;
+    if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[1], "editor")) || (strcmp(argv[1], "files") && strcmp(argv[1], "system") && strcmp(argv[1], "settings") && strcmp(argv[1], "editor") && strcmp(argv[1], "processes") && strcmp(argv[1], "session"))) {
+        fprintf(stderr, "Usage: %s files|system|settings|processes|session|editor [FILE]\n", argv[0]); return 1;
     }
-    app = !strcmp(argv[1], "files") ? FILES : !strcmp(argv[1], "system") ? SYSTEM : !strcmp(argv[1], "settings") ? SETTINGS : !strcmp(argv[1], "editor") ? EDITOR : PROCESSES;
+    app = !strcmp(argv[1], "files") ? FILES : !strcmp(argv[1], "system") ? SYSTEM : !strcmp(argv[1], "settings") ? SETTINGS : !strcmp(argv[1], "editor") ? EDITOR : !strcmp(argv[1], "session") ? SESSION : PROCESSES;
     display = XOpenDisplay(NULL);
     if (!display) { fprintf(stderr, "wiidesk-x11-app: cannot open DISPLAY\n"); return 1; }
     preferences_load(&prefs);
     foreground = color("#eef2f3"); muted = color("#aabdc3"); surface = color("#333b40"); accent = color(accent_colors[prefs.accent]);
     window = XCreateSimpleWindow(display, DefaultRootWindow(display), 48, 48, width, height, 0, 0, color("#242b2f"));
-    const char *title = app == FILES ? "WiiDesk Files" : app == SYSTEM ? "WiiDesk System" : app == SETTINGS ? "WiiDesk Settings" : app == EDITOR ? "WiiDesk Editor" : "WiiDesk Processes";
+    const char *title = app == FILES ? "WiiDesk Files" : app == SYSTEM ? "WiiDesk System" : app == SETTINGS ? "WiiDesk Settings" : app == EDITOR ? "WiiDesk Editor" : app == SESSION ? "WiiDesk Session" : "WiiDesk Processes";
     XStoreName(display, window, title);
     XClassHint class_hint = { .res_name = argv[1], .res_class = "WiiDesk" }; XSetClassHint(display, window, &class_hint);
     XSizeHints hints = { .flags = PMinSize, .min_width = 360, .min_height = 300 }; XSetWMNormalHints(display, window, &hints);
@@ -591,6 +664,10 @@ int main(int argc, char **argv)
         else if (getenv("WIIDESK_EDITOR_FILE")) editor_load(getenv("WIIDESK_EDITOR_FILE"));
     }
     if (app == PROCESSES) process_refresh();
+    if (app == SESSION) {
+        struct passwd *pw = getpwuid(getuid()); snprintf(session_user, sizeof(session_user), "%s", pw ? pw->pw_name : "unknown");
+        XSelectInput(display, DefaultRootWindow(display), PropertyChangeMask); session_refresh();
+    }
     if (app == FILES) load_directory(getenv("HOME") ? getenv("HOME") : "/");
     if (app == SYSTEM) system_refresh();
     if (app == SETTINGS) strcpy(status, "Choose colors, then Save and apply");
@@ -603,6 +680,7 @@ int main(int argc, char **argv)
             int clip = ui_clipboard_event(&shared_ui, &e);
             if (clip) { if (clip < 0) strcpy(status, "Paste failed: supports ASCII text up to 64 KiB"); dirty = 1; continue; }
             switch (e.type) {
+            case PropertyNotify: if (app == SESSION && e.xproperty.window == DefaultRootWindow(display)) { session_refresh(); dirty = 1; } break;
             case Expose: if (!e.xexpose.count) dirty = 1; break;
             case ConfigureNotify: width = e.xconfigure.width; height = e.xconfigure.height; dirty = 1; break;
             case VisibilityNotify: visible = e.xvisibility.state != VisibilityFullyObscured; break;

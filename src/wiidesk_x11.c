@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "x11_preferences.h"
+#include "x11_session.h"
 
 #define CLIENTS 64
 #define TITLE 24
@@ -33,8 +34,9 @@ static Display *display;
 static Window root, panel, check, menu;
 static int menu_open, menu_selected;
 static char app_program[PATH_MAX];
-static const char *const menu_labels[] = { "Terminal", "Files", "System", "Settings", "Editor", "Processes" };
-static const char *const app_arguments[] = { NULL, "files", "system", "settings", "editor", "processes" };
+static const char *const menu_labels[] = { "Terminal", "Files", "System", "Settings", "Editor", "Processes", "Session" };
+static const char *const app_arguments[] = { NULL, "files", "system", "settings", "editor", "processes", "session" };
+#define MENU_ITEMS ((int)(sizeof(menu_labels) / sizeof(menu_labels[0])))
 static int screen, screen_width, screen_height, ownership_error;
 static GC gc, outline_gc;
 static XFontStruct *font;
@@ -47,6 +49,12 @@ static Atom net_active, net_clients, net_supported, net_check, net_name, utf8;
 static Atom net_state, net_hidden, net_max_h, net_max_v, net_close, net_extents;
 static Atom net_workarea, net_desktops, net_current, net_wm_desktop, reload_settings;
 static const char *terminal = "xterm";
+static Atom session_action_atom, session_caps_atom, session_status_atom;
+static int managed_session, logout_pending;
+static Window logout_requester;
+static pid_t locker_pid;
+static const char *locker = "/usr/bin/xsecurelock";
+static char session_status[160];
 
 static void stop_handler(int signal_number) { (void)signal_number; stopping = 1; }
 static int xerror(Display *d, XErrorEvent *e)
@@ -231,6 +239,70 @@ static void close_client(struct client *c, Time time)
     if (supports(c, wm_delete)) protocol(c, wm_delete, time);
     else XKillClient(display, c->window);
 }
+static void session_publish(const char *status)
+{
+    unsigned long caps[] = {managed_session, !access(locker, X_OK), logout_pending, locker_pid > 0};
+    property(root, session_caps_atom, XA_CARDINAL, caps, 4);
+    if (status && strcmp(status, session_status)) {
+        snprintf(session_status, sizeof(session_status), "%s", status);
+        XChangeProperty(display, root, session_status_atom, utf8, 8, PropModeReplace,
+                        (unsigned char *)session_status, strlen(session_status));
+    }
+}
+static void session_lock(void)
+{
+    if (locker_pid > 0) return;
+    if (access(locker, X_OK)) { session_publish("Lock unavailable: install XSecureLock"); return; }
+    locker_pid = fork();
+    if (!locker_pid) {
+        close(ConnectionNumber(display));
+        /* Authentication and screen/input protection belong to the packaged locker. */
+        setenv("XSECURELOCK_SAVER", "saver_blank", 1);
+        setenv("XSECURELOCK_AUTH_BACKGROUND_COLOR", "#244b59", 1);
+        setenv("XSECURELOCK_AUTH_FOREGROUND_COLOR", "#eef2f3", 1);
+        setenv("XSECURELOCK_FONT", "fixed", 1);
+        setenv("XSECURELOCK_AUTH_CURSOR_BLINK", "0", 1);
+        setenv("XSECURELOCK_PAM_SERVICE", "wiidesk-lock", 1);
+        execl(locker, locker, (char *)NULL); _exit(127);
+    }
+    if (locker_pid < 0) { locker_pid = 0; session_publish("Lock could not start"); if (managed_session) stopping = 1; }
+    else session_publish("Lock requested; enter your password to unlock");
+}
+static void session_request(int action, Window requester)
+{
+    if (action == SESSION_LOCK) { session_lock(); return; }
+    if (!managed_session) { session_publish("Log out is available after signing in through WiiDesk"); return; }
+    if (locker_pid > 0) return;
+    if (action == SESSION_CANCEL_LOGOUT) { logout_pending = 0; session_publish("Logout cancelled"); }
+    else if (action == SESSION_FORCE_LOGOUT && logout_pending && requester == logout_requester) stopping = 1;
+    else if (action == SESSION_LOGOUT && !logout_pending) {
+        logout_pending = 1; logout_requester = requester;
+        session_publish("Close or save your other applications to finish logout");
+        for (int i = 0; i < CLIENTS; i++) {
+            struct client *c = &clients[i];
+            if (c->window && c->window != requester && supports(c, wm_delete)) protocol(c, wm_delete, CurrentTime);
+        }
+    }
+}
+static void session_tick(void)
+{
+    int status; pid_t child;
+    while ((child = waitpid(-1, &status, WNOHANG)) > 0) {
+        if (child != locker_pid) continue;
+        locker_pid = 0;
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) session_publish("Unlocked");
+        else {
+            session_publish(managed_session ? "Lock failed; ending session" : "Lock failed; session is NOT locked");
+            /* XDM resets the authenticated session if the locker fails. */
+            if (managed_session) stopping = 1;
+        }
+    }
+    if (!logout_pending) return;
+    if (!find(logout_requester)) { logout_pending = 0; session_publish("Logout cancelled"); return; }
+    int remaining = 0;
+    for (int i = 0; i < CLIENTS; i++) if (clients[i].window && clients[i].window != logout_requester) remaining++;
+    if (!remaining) stopping = 1;
+}
 static void update_title(struct client *c)
 {
     char *name = NULL;
@@ -308,7 +380,7 @@ static void launch_app(int index)
 static void draw_menu(void)
 {
     XClearWindow(display, menu);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < MENU_ITEMS; i++) {
         if (i == menu_selected) {
             XSetForeground(display, gc, accent);
             XFillRectangle(display, menu, gc, 4, 4 + i * 30, 172, 28);
@@ -349,7 +421,7 @@ static void button(XButtonEvent *e)
 {
     if (menu_open) {
         int selected = (e->y - 4) / 30;
-        int inside = e->x >= 4 && e->x < 176 && e->y >= 4 && e->y < 184;
+        int inside = e->x >= 4 && e->x < 176 && e->y >= 4 && e->y < 4 + MENU_ITEMS * 30;
         close_menu();
         if (inside && e->button == Button1) launch_app(selected);
         return;
@@ -394,10 +466,13 @@ static void button(XButtonEvent *e)
 static void key(XKeyEvent *e)
 {
     KeySym sym = XLookupKeysym(e, 0);
+    if ((e->state & (ControlMask | Mod1Mask)) == (ControlMask | Mod1Mask) && sym == XK_l) {
+        close_menu(); cancel_drag(); XSync(display, False); session_lock(); return;
+    }
     if (menu_open) {
         if (sym == XK_Escape) close_menu();
         else if (sym == XK_Up || sym == XK_Down) {
-            menu_selected = (menu_selected + (sym == XK_Up ? 5 : 1)) % 6; draw_menu();
+            menu_selected = (menu_selected + (sym == XK_Up ? MENU_ITEMS - 1 : 1)) % MENU_ITEMS; draw_menu();
         } else if (sym == XK_Return || sym == XK_space) {
             int selected = menu_selected; close_menu(); launch_app(selected);
         }
@@ -430,6 +505,9 @@ static void configure_request(XConfigureRequestEvent *e)
 }
 static void message(XClientMessageEvent *e)
 {
+    if (e->message_type == session_action_atom && e->format == 32 && find(e->window)) {
+        session_request(e->data.l[0], e->window); return;
+    }
     if (e->message_type == reload_settings && e->window == root && e->format == 32) {
         apply_preferences(); return;
     }
@@ -470,7 +548,7 @@ static void event(XEvent *e)
     case KeyPress: key(&e->xkey); break;
     case ClientMessage: message(&e->xclient); break;
     case MotionNotify:
-        if (menu_open && e->xmotion.x >= 4 && e->xmotion.x < 176 && e->xmotion.y >= 4 && e->xmotion.y < 184) {
+        if (menu_open && e->xmotion.x >= 4 && e->xmotion.x < 176 && e->xmotion.y >= 4 && e->xmotion.y < 4 + MENU_ITEMS * 30) {
             int selected = (e->xmotion.y - 4) / 30;
             if (selected != menu_selected) { menu_selected = selected; draw_menu(); }
         }
@@ -490,6 +568,7 @@ static void event(XEvent *e)
 }
 static void setup_atoms(void)
 {
+    session_action_atom = atom(SESSION_ACTION); session_caps_atom = atom(SESSION_CAPS); session_status_atom = atom(SESSION_STATUS);
     reload_settings = atom(SETTINGS_MESSAGE);
     wm_protocols = atom("WM_PROTOCOLS"); wm_delete = atom("WM_DELETE_WINDOW"); wm_take_focus = atom("WM_TAKE_FOCUS");
     wm_state = atom("WM_STATE"); wm_change_state = atom("WM_CHANGE_STATE");
@@ -524,6 +603,9 @@ int main(int argc, char **argv)
     XSync(display, False);
     if (ownership_error) { fprintf(stderr, "wiidesk-x11: another window manager is running\n"); XCloseDisplay(display); return 1; }
     setup_atoms();
+    managed_session = getenv("WIIDESK_MANAGED_SESSION") && !strcmp(getenv("WIIDESK_MANAGED_SESSION"), "1");
+    if (getenv("WIIDESK_LOCKER") && getenv("WIIDESK_LOCKER")[0] == '/') locker = getenv("WIIDESK_LOCKER");
+    session_publish(managed_session ? "Signed in" : "Manual X11 session");
     struct preferences p; preferences_load(&p);
     background = color(background_colors[p.background]); foreground = color("#f0f4f5"); muted = color("#aabdc3");
     accent = color(accent_colors[p.accent]); border = color("#263137");
@@ -539,7 +621,9 @@ int main(int argc, char **argv)
                           0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
     XStoreName(display, panel, "WiiDesk Panel"); XMapRaised(display, panel);
     a.event_mask = ExposureMask | ButtonPressMask | PointerMotionMask | KeyPressMask;
-    menu = XCreateWindow(display, root, 4, screen_height - PANEL - 188, 180, 184,
+    int menu_y = screen_height - PANEL - (MENU_ITEMS * 30 + 8);
+    if (menu_y < 0) menu_y = 0;
+    menu = XCreateWindow(display, root, 4, menu_y, 180, MENU_ITEMS * 30 + 4,
                          0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
     XStoreName(display, menu, "WiiDesk Launcher");
     check = XCreateSimpleWindow(display, root, -1, -1, 1, 1, 0, 0, 0);
@@ -551,9 +635,9 @@ int main(int argc, char **argv)
     property(root, net_supported, XA_ATOM, supported, sizeof(supported) / sizeof(supported[0]));
     property(root, net_desktops, XA_CARDINAL, &one, 1); property(root, net_current, XA_CARDINAL, &zero, 1);
     property(root, net_workarea, XA_CARDINAL, area, 4); client_list();
-    const KeySym keys[] = { XK_Tab, XK_F1, XK_F4, XK_F9, XK_F10, XK_Return };
+    const KeySym keys[] = { XK_Tab, XK_F1, XK_F4, XK_F9, XK_F10, XK_Return, XK_l };
     for (unsigned int i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-        unsigned int modifiers = Mod1Mask | (keys[i] == XK_Return ? ControlMask : 0);
+        unsigned int modifiers = Mod1Mask | (keys[i] == XK_Return || keys[i] == XK_l ? ControlMask : 0);
         for (unsigned int j = 0; j < 4; j++) XGrabKey(display, XKeysymToKeycode(display, keys[i]),
             modifiers | ((j & 1) ? LockMask : 0) | ((j & 2) ? Mod2Mask : 0), root, True, GrabModeAsync, GrabModeAsync);
     }
@@ -570,7 +654,7 @@ int main(int argc, char **argv)
     puts("wiidesk-x11: ready; Alt+Tab focus, Alt+F4 close, Alt+F9 minimize, Alt+F10 maximize, Ctrl+Alt+Return terminal"); fflush(stdout);
     while (!stopping) {
         while (XPending(display) && !stopping) { XEvent e; XNextEvent(display, &e); event(&e); }
-        while (waitpid(-1, NULL, WNOHANG) > 0) {}
+        session_tick();
         XFlush(display);
         struct pollfd p = { .fd = ConnectionNumber(display), .events = POLLIN };
         if (poll(&p, 1, 200) < 0 && errno != EINTR) break;
@@ -584,6 +668,7 @@ int main(int argc, char **argv)
     XDeleteProperty(display, root, net_check); XDeleteProperty(display, root, net_supported);
     XDeleteProperty(display, root, net_clients); XDeleteProperty(display, root, net_active);
     XDeleteProperty(display, root, net_workarea); XDeleteProperty(display, root, net_desktops); XDeleteProperty(display, root, net_current);
+    XDeleteProperty(display, root, session_caps_atom); XDeleteProperty(display, root, session_status_atom);
     XDestroyWindow(display, panel); XDestroyWindow(display, menu); XDestroyWindow(display, check);
     if (font) XFreeFont(display, font);
     XFreeGC(display, gc); XFreeGC(display, outline_gc); XCloseDisplay(display);
