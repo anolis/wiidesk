@@ -6,12 +6,14 @@
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <dirent.h>
+#include <ctype.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <time.h>
 #include <sys/stat.h>
 #include "x11_preferences.h"
+#include "x11_controls.h"
 
 #define ENTRIES 512
 #define ROW 22
@@ -23,7 +25,13 @@ static Atom wm_delete, wm_protocols;
 static int width = 460, height = 330, visible = 1, dirty = 1;
 static volatile sig_atomic_t stopping;
 static unsigned long foreground, muted, surface, accent;
-static enum { FILES, SYSTEM, SETTINGS } app;
+static enum { FILES, SYSTEM, SETTINGS, EDITOR, PROCESSES } app;
+static struct ui shared_ui;
+static struct ui_text editor_text;
+static struct ui_list process_list;
+static char editor_path[PATH_MAX];
+static char process_lines[128][96];
+static int process_count, editor_top;
 static struct preferences prefs;
 static int setting_row;
 static char status[160];
@@ -171,6 +179,38 @@ static void system_refresh(void)
     snprintf(system_lines[5], sizeof(system_lines[5]), "Graphics    GX %s | DRM %s", access("/sys/module/gcn_gx", F_OK) ? "absent" : "loaded", access("/sys/class/drm/card0", F_OK) ? "absent" : "present");
     snprintf(system_lines[6], sizeof(system_lines[6]), "Session     X11 | user ID %lu", (unsigned long)getuid());
 }
+static void process_refresh(void)
+{
+    DIR *d = opendir("/proc"); process_count = 0;
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) && process_count < 128) {
+        char path[64], name[64];
+        if (!isdigit((unsigned char)e->d_name[0])) continue;
+        snprintf(path, sizeof(path), "/proc/%.48s/stat", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f || fscanf(f, "%*s (%63[^)])", name) != 1) { if (f) fclose(f); continue; }
+        fclose(f); snprintf(process_lines[process_count], sizeof(process_lines[0]), "%.15s  %.78s", e->d_name, name); process_count++;
+    }
+    closedir(d); process_list.count = process_count; ui_list_reveal(&process_list, 10);
+}
+static void editor_load(const char *path)
+{
+    FILE *f = fopen(path, "r"); if (!f) { snprintf(status, sizeof(status), "Open failed: %s", strerror(errno)); return; }
+    char *data = malloc(262145); if (!data) { fclose(f); return; }
+    size_t n = fread(data, 1, 262144, f); int bad = ferror(f); fclose(f);
+    if (bad || ui_text_set(&editor_text, data, n)) snprintf(status, sizeof(status), "File too large or binary");
+    else { snprintf(editor_path, sizeof(editor_path), "%s", path); snprintf(status, sizeof(status), "Loaded %zu bytes", n); }
+    free(data);
+}
+static void editor_save(void)
+{
+    if (!editor_path[0]) { snprintf(status, sizeof(status), "Set WIIDESK_EDITOR_FILE first"); return; }
+    char temp[PATH_MAX]; if (strlen(editor_path) + 7 >= sizeof(temp)) { snprintf(status, sizeof(status), "Path too long"); return; } snprintf(temp, sizeof(temp), "%s.XXXXXX", editor_path); int fd = mkstemp(temp);
+    if (fd < 0) { snprintf(status, sizeof(status), "Save failed: %s", strerror(errno)); return; }
+    ssize_t n = write(fd, editor_text.data, editor_text.length); int bad = n != (ssize_t)editor_text.length || fsync(fd) || close(fd) || rename(temp, editor_path);
+    if (bad) { unlink(temp); snprintf(status, sizeof(status), "Save failed: %s", strerror(errno)); } else { editor_text.modified = 0; snprintf(status, sizeof(status), "Saved %zu bytes", editor_text.length); }
+}
 static void draw(void)
 {
     XClearWindow(display, window);
@@ -190,7 +230,7 @@ static void draw(void)
         text(16, 28, "System monitor", foreground);
         for (int i = 0; i < 7; i++) text(16, 60 + i * 30, system_lines[i], i % 2 ? muted : foreground);
         text(16, height - 14, "Updates once per second while visible", muted);
-    } else {
+    } else if (app == SETTINGS) {
         text(16, 28, "Desktop appearance", foreground);
         for (int i = 0; i < 2; i++) {
             rectangle(12, 48 + i * 38, width - 24, 30, setting_row == i ? accent : surface);
@@ -202,6 +242,15 @@ static void draw(void)
         text(16, 198, "Arrows change colors; Tab selects Save", muted);
         text(16, 220, "Enter saves; Escape closes", muted);
         text(16, height - 16, status, muted);
+    } else if (app == EDITOR) {
+        text(16, 28, editor_path[0] ? editor_path : "WiiDesk Editor", foreground);
+        shared_ui.window = window; shared_ui.width = width; shared_ui.height = height;
+        ui_text_draw(&shared_ui, &editor_text, 12, 46, width - 24, height - 74, &editor_top, 1);
+        text(16, height - 14, "Ctrl+O open default | Ctrl+S save | Ctrl+Z undo", muted);
+    } else {
+        text(16, 28, "Process manager", foreground);
+        for (int i = 0; i < page_rows() && process_list.scroll + i < process_count; i++) text(16, 60 + i * ROW, process_lines[process_list.scroll + i], foreground);
+        text(16, height - 14, "Up/Down select | Delete sends TERM | F5 refresh", muted);
     }
     XFlush(display); dirty = 0;
 }
@@ -225,7 +274,17 @@ static void key(XKeyEvent *e)
 {
     KeySym k = XLookupKeysym(e, 0);
     if (k == XK_Escape) { stopping = 1; return; }
-    if (app == FILES) {
+    if (app == EDITOR) {
+        if ((e->state & ControlMask) && (k == XK_s || k == XK_S)) { editor_save(); dirty = 1; return; }
+        if ((e->state & ControlMask) && (k == XK_o || k == XK_O)) { editor_load(getenv("WIIDESK_EDITOR_FILE") ? getenv("WIIDESK_EDITOR_FILE") : "/tmp/wiidesk-note.txt"); dirty = 1; return; }
+        char bytes[8]; int n = XLookupString(e, bytes, sizeof(bytes), NULL, NULL);
+        ui_text_key(&editor_text, k, e->state, bytes, n, 1); dirty = 1; return;
+    } else if (app == PROCESSES) {
+        if (ui_list_key(&process_list, k, page_rows())) dirty = 1;
+        if (k == XK_F5) { process_refresh(); dirty = 1; }
+        if (k == XK_Delete && process_list.selected < process_count) { char pid[16]; sscanf(process_lines[process_list.selected], "%15s", pid); kill((pid_t)strtol(pid, NULL, 10), SIGTERM); process_refresh(); dirty = 1; }
+        return;
+    } else if (app == FILES) {
         if (k == XK_Up && selected > 0) selected--;
         if (k == XK_Down && selected + 1 < entry_count) selected++;
         if (k == XK_Page_Down) { selected += page_rows(); if (selected >= entry_count) selected = entry_count ? entry_count - 1 : 0; }
@@ -270,16 +329,16 @@ static void button(XButtonEvent *e)
 }
 int main(int argc, char **argv)
 {
-    if (argc != 2 || (strcmp(argv[1], "files") && strcmp(argv[1], "system") && strcmp(argv[1], "settings"))) {
-        fprintf(stderr, "Usage: %s files|system|settings\n", argv[0]); return 1;
+    if (argc != 2 || (strcmp(argv[1], "files") && strcmp(argv[1], "system") && strcmp(argv[1], "settings") && strcmp(argv[1], "editor") && strcmp(argv[1], "processes"))) {
+        fprintf(stderr, "Usage: %s files|system|settings|editor|processes\n", argv[0]); return 1;
     }
-    app = !strcmp(argv[1], "files") ? FILES : !strcmp(argv[1], "system") ? SYSTEM : SETTINGS;
+    app = !strcmp(argv[1], "files") ? FILES : !strcmp(argv[1], "system") ? SYSTEM : !strcmp(argv[1], "settings") ? SETTINGS : !strcmp(argv[1], "editor") ? EDITOR : PROCESSES;
     display = XOpenDisplay(NULL);
     if (!display) { fprintf(stderr, "wiidesk-x11-app: cannot open DISPLAY\n"); return 1; }
     preferences_load(&prefs);
     foreground = color("#eef2f3"); muted = color("#aabdc3"); surface = color("#333b40"); accent = color(accent_colors[prefs.accent]);
     window = XCreateSimpleWindow(display, DefaultRootWindow(display), 48, 48, width, height, 0, 0, color("#242b2f"));
-    const char *title = app == FILES ? "WiiDesk Files" : app == SYSTEM ? "WiiDesk System" : "WiiDesk Settings";
+    const char *title = app == FILES ? "WiiDesk Files" : app == SYSTEM ? "WiiDesk System" : app == SETTINGS ? "WiiDesk Settings" : app == EDITOR ? "WiiDesk Editor" : "WiiDesk Processes";
     XStoreName(display, window, title);
     XClassHint class_hint = { .res_name = argv[1], .res_class = "WiiDesk" }; XSetClassHint(display, window, &class_hint);
     XSizeHints hints = { .flags = PMinSize, .min_width = 360, .min_height = 300 }; XSetWMNormalHints(display, window, &hints);
@@ -289,6 +348,9 @@ int main(int argc, char **argv)
     gc = XCreateGC(display, window, 0, NULL); font = XLoadQueryFont(display, "8x13");
     if (!font) font = XLoadQueryFont(display, "fixed");
     if (font) XSetFont(display, gc, font->fid);
+    shared_ui = (struct ui){.display=display, .window=window, .gc=gc, .width=width, .height=height, .text=foreground, .muted=muted, .surface=surface, .accent=accent, .background=color("#242b2f")};
+    if (app == EDITOR) { if (ui_text_init(&editor_text, 262144)) return 1; if (getenv("WIIDESK_EDITOR_FILE")) editor_load(getenv("WIIDESK_EDITOR_FILE")); }
+    if (app == PROCESSES) process_refresh();
     if (app == FILES) load_directory(getenv("HOME") ? getenv("HOME") : "/");
     if (app == SYSTEM) system_refresh();
     if (app == SETTINGS) strcpy(status, "Choose colors, then Save and apply");

@@ -33,8 +33,8 @@ static Display *display;
 static Window root, panel, check, menu;
 static int menu_open, menu_selected;
 static char app_program[PATH_MAX];
-static const char *const menu_labels[] = { "Terminal", "Files", "System", "Settings" };
-static const char *const app_arguments[] = { NULL, "files", "system", "settings" };
+static const char *const menu_labels[] = { "Terminal", "Files", "System", "Settings", "Editor", "Processes" };
+static const char *const app_arguments[] = { NULL, "files", "system", "settings", "editor", "processes" };
 static int screen, screen_width, screen_height, ownership_error;
 static GC gc, outline_gc;
 static XFontStruct *font;
@@ -308,7 +308,7 @@ static void launch_app(int index)
 static void draw_menu(void)
 {
     XClearWindow(display, menu);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 6; i++) {
         if (i == menu_selected) {
             XSetForeground(display, gc, accent);
             XFillRectangle(display, menu, gc, 4, 4 + i * 30, 172, 28);
@@ -349,7 +349,7 @@ static void button(XButtonEvent *e)
 {
     if (menu_open) {
         int selected = (e->y - 4) / 30;
-        int inside = e->x >= 4 && e->x < 176 && e->y >= 4 && e->y < 124;
+        int inside = e->x >= 4 && e->x < 176 && e->y >= 4 && e->y < 184;
         close_menu();
         if (inside && e->button == Button1) launch_app(selected);
         return;
@@ -397,7 +397,7 @@ static void key(XKeyEvent *e)
     if (menu_open) {
         if (sym == XK_Escape) close_menu();
         else if (sym == XK_Up || sym == XK_Down) {
-            menu_selected = (menu_selected + (sym == XK_Up ? 3 : 1)) % 4; draw_menu();
+            menu_selected = (menu_selected + (sym == XK_Up ? 5 : 1)) % 6; draw_menu();
         } else if (sym == XK_Return || sym == XK_space) {
             int selected = menu_selected; close_menu(); launch_app(selected);
         }
@@ -470,7 +470,7 @@ static void event(XEvent *e)
     case KeyPress: key(&e->xkey); break;
     case ClientMessage: message(&e->xclient); break;
     case MotionNotify:
-        if (menu_open && e->xmotion.x >= 4 && e->xmotion.x < 176 && e->xmotion.y >= 4 && e->xmotion.y < 124) {
+        if (menu_open && e->xmotion.x >= 4 && e->xmotion.x < 176 && e->xmotion.y >= 4 && e->xmotion.y < 184) {
             int selected = (e->xmotion.y - 4) / 30;
             if (selected != menu_selected) { menu_selected = selected; draw_menu(); }
         }
@@ -539,7 +539,7 @@ int main(int argc, char **argv)
                           0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
     XStoreName(display, panel, "WiiDesk Panel"); XMapRaised(display, panel);
     a.event_mask = ExposureMask | ButtonPressMask | PointerMotionMask | KeyPressMask;
-    menu = XCreateWindow(display, root, 4, screen_height - PANEL - 132, 180, 128,
+    menu = XCreateWindow(display, root, 4, screen_height - PANEL - 188, 180, 184,
                          0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
     XStoreName(display, menu, "WiiDesk Launcher");
     check = XCreateSimpleWindow(display, root, -1, -1, 1, 1, 0, 0, 0);
