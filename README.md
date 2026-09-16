@@ -59,6 +59,9 @@ The DRM device argument is optional and defaults to `/dev/dri/card0`.
 
 ## X11 window manager
 
+The planned core application suite and its implementation status are tracked in
+[the app roadmap](docs/app-roadmap.md).
+
 The optional `wiidesk-x11` executable manages ordinary X11 applications itself.
 It provides window frames, click-to-focus, outline move/resize, minimize,
 maximize, close, a task panel, and a launcher for Terminal, Files, System, and
