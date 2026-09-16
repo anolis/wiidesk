@@ -3,6 +3,8 @@
 # Host integration suite; uses Xephyr and a fresh HOME, never the user's settings.
 set -eu
 build=${1:-build/host}
+WIIDESK_TEST_BUILD=$(realpath "$build")
+export WIIDESK_TEST_BUILD
 test_display=${WIIDESK_TEST_DISPLAY:-:99}
 test_dir=$(mktemp -d /tmp/wiidesk-desktop-test.XXXXXX)
 server_pid=
@@ -22,6 +24,7 @@ server_pid=$!
 export DISPLAY="$test_display" XAUTHORITY="$test_dir/Xauthority"
 export HOME="$test_dir/home" WIIDESK_TEST_HOME="$test_dir/home"
 unset XDG_CONFIG_HOME
+unset XDG_DATA_HOME
 i=0
 until xdpyinfo >/dev/null 2>&1; do
     kill -0 "$server_pid"
@@ -39,3 +42,5 @@ done
 "$build/x11-wm-smoke"
 python3 tests/x11_pointer_smoke.py
 python3 tests/x11_desktop_smoke.py
+"$build/x11-controls-test"
+python3 tests/x11_core_apps_smoke.py

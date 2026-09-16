@@ -16,12 +16,13 @@ struct ui {
     char *selection;
     size_t selection_length;
     struct ui_text *paste_target;
+    Time paste_time;
 };
 struct ui_list { int count, selected, scroll; };
 struct ui_text {
     char *data, *undo;
     size_t capacity, length, cursor, anchor, undo_length, undo_cursor;
-    int has_undo, modified;
+    int has_undo, modified, typing;
 };
 void ui_label(struct ui *, int x, int y, const char *, unsigned long);
 void ui_fill(struct ui *, int x, int y, int w, int h, unsigned long);

@@ -72,7 +72,7 @@ int ui_text_set(struct ui_text *t, const char *s, size_t n)
 {
     if (n > t->capacity || !valid_text(s, n)) return -1;
     memmove(t->data, s, n); t->data[n] = 0;
-    t->length = n; t->cursor = t->anchor = 0; t->has_undo = t->modified = 0; return 0;
+    t->length = n; t->cursor = t->anchor = 0; t->has_undo = t->modified = t->typing = 0; return 0;
 }
 static void snapshot(struct ui_text *t)
 {
@@ -85,7 +85,7 @@ int ui_text_insert(struct ui_text *t, const char *s, size_t n)
     size_t b = t->cursor > t->anchor ? t->cursor : t->anchor;
     if (n > t->capacity - (t->length - (b - a)) || !valid_text(s, n)) return -1;
     if (a == b && !n) return 0;
-    snapshot(t);
+    if (!t->typing) snapshot(t);
     memmove(t->data + a + n, t->data + b, t->length - b + 1);
     if (n) memcpy(t->data + a, s, n);
     t->length += n; t->length -= b - a;
@@ -98,6 +98,7 @@ static size_t line_end(struct ui_text *t, size_t p)
 int ui_text_key(struct ui_text *t, KeySym k, unsigned state, const char *bytes, int n, int multiline)
 {
     int control = state & ControlMask, shift = state & ShiftMask;
+    int was_typing = t->typing; t->typing = 0;
     if (control && (k == XK_a || k == XK_A)) { t->anchor = 0; t->cursor = t->length; return 1; }
     if (control && (k == XK_z || k == XK_Z) && t->has_undo) {
         char *swap = t->data; t->data = t->undo; t->undo = swap;
@@ -122,7 +123,11 @@ int ui_text_key(struct ui_text *t, KeySym k, unsigned state, const char *bytes, 
         return ui_text_insert(t, "", 0) ? -1 : 1;
     } else if (k == XK_Return && multiline) return ui_text_insert(t, "\n", 1) ? -1 : 1;
     else if (k == XK_Tab && multiline) return ui_text_insert(t, "\t", 1) ? -1 : 1;
-    else if (!control && !(state & Mod1Mask) && n > 0 && (unsigned char)bytes[0] >= 32) return ui_text_insert(t, bytes, n) ? -1 : 1;
+    else if (!control && !(state & Mod1Mask) && n > 0 && (unsigned char)bytes[0] >= 32) {
+        t->typing = was_typing;
+        if (ui_text_insert(t, bytes, n)) { t->typing = 0; return -1; }
+        t->typing = 1; return 1;
+    }
     else return 0;
     t->cursor = p; if (!shift) t->anchor = p; return 1;
 }
@@ -179,6 +184,7 @@ void ui_text_click(struct ui_text *t, int x, int y, int width, int top, int mult
         if (row > target_row) break;
     }
     t->cursor = p; if (!extend) t->anchor = p;
+    t->typing = 0;
 }
 void ui_clipboard_init(struct ui *u)
 {
@@ -190,6 +196,7 @@ void ui_clipboard_init(struct ui *u)
 int ui_clipboard_key(struct ui *u, struct ui_text *t, KeySym k, unsigned state, Time time)
 {
     if (!(state & ControlMask)) return 0;
+    t->typing = 0;
     if (k == XK_c || k == XK_C || k == XK_x || k == XK_X) {
         size_t a = t->cursor < t->anchor ? t->cursor : t->anchor, b = t->cursor > t->anchor ? t->cursor : t->anchor;
         if (a == b) return 1;
@@ -203,6 +210,7 @@ int ui_clipboard_key(struct ui *u, struct ui_text *t, KeySym k, unsigned state, 
     if (k == XK_v || k == XK_V) {
         if (u->paste_target) return -1;
         u->paste_target = t;
+        u->paste_time = time;
         XConvertSelection(u->display, u->clipboard, u->utf8, u->transfer, u->window, time);
         return 1;
     }
@@ -230,14 +238,14 @@ int ui_clipboard_event(struct ui *u, XEvent *e)
         }
         XSendEvent(u->display, r->requestor, False, 0, &reply); return 1;
     }
-    if (e->type == SelectionNotify && u->paste_target && e->xselection.selection == u->clipboard) {
+    if (e->type == SelectionNotify && u->paste_target && e->xselection.selection == u->clipboard && e->xselection.time == u->paste_time) {
         struct ui_text *t = u->paste_target; u->paste_target = NULL;
         if (e->xselection.property == None) return -1;
         Atom type; int format; unsigned long count, left; unsigned char *data = NULL;
         int ok = XGetWindowProperty(u->display, u->window, u->transfer, 0, 16385, True, AnyPropertyType,
                                    &type, &format, &count, &left, &data) == Success &&
                  (type == u->utf8 || type == XA_STRING) && format == 8 && !left && count <= 65536;
-        if (ok) ok = !ui_text_insert(t, (char *)data, count);
+        if (ok) { t->typing = 0; ok = !ui_text_insert(t, (char *)data, count); }
         if (data) XFree(data);
         XDeleteProperty(u->display, u->window, u->transfer);
         return ok ? 1 : -1;

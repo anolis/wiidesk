@@ -12,9 +12,9 @@ buttons, dialogs, clipboard, and consistent keyboard navigation.
 
 | App | Planned initial scope | Status |
 | --- | --- | --- |
-| Text Editor | Open/save dialogs, plain-text editing, search, undo, selection, clipboard, and configuration editing | In progress; initial editor exists, completing file handling and integration |
-| File Manager | Extend Files with copy, move, rename, new folders, and recoverable trash | Browsing works; file operations in progress |
-| Process Manager | Per-process CPU/memory, refresh, selection, and deliberate termination of stuck applications | In progress; initial process listing exists |
+| Text Editor | Open/save dialogs, plain-text editing, search, undo, selection, clipboard, and configuration editing | Implemented and host-tested for bounded ASCII text; hardware file/control tests and startup/display verified |
+| File Manager | Extend Files with copy, move, rename, new folders, and recoverable trash | Implemented and host-tested for regular-file copy, same-filesystem moves, and last-trash restore; hardware file/control tests and startup verified |
+| Process Manager | Per-process CPU/memory, refresh, selection, and deliberate termination of stuck applications | Implemented and host-tested, including confirmed termination of a disposable process; hardware startup/display verified |
 | Network Settings | Connection status, IP/DNS details, connectivity checks, and connection configuration | Planned |
 | Image Viewer | Browse pictures, fit-to-screen, zoom, and bounded image decoding | Planned |
 | Log Viewer | Follow logs, filter messages, pause, and search | Planned |
