@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "x11_preferences.h"
 
 #define CLIENTS 64
 #define TITLE 24
@@ -29,7 +30,11 @@ struct client {
     char title[128];
 };
 static Display *display;
-static Window root, panel, check;
+static Window root, panel, check, menu;
+static int menu_open, menu_selected;
+static char app_program[PATH_MAX];
+static const char *const menu_labels[] = { "Terminal", "Files", "System", "Settings" };
+static const char *const app_arguments[] = { NULL, "files", "system", "settings" };
 static int screen, screen_width, screen_height, ownership_error;
 static GC gc, outline_gc;
 static XFontStruct *font;
@@ -40,7 +45,7 @@ static volatile sig_atomic_t stopping;
 static Atom wm_protocols, wm_delete, wm_take_focus, wm_state, wm_change_state;
 static Atom net_active, net_clients, net_supported, net_check, net_name, utf8;
 static Atom net_state, net_hidden, net_max_h, net_max_v, net_close, net_extents;
-static Atom net_workarea, net_desktops, net_current, net_wm_desktop;
+static Atom net_workarea, net_desktops, net_current, net_wm_desktop, reload_settings;
 static const char *terminal = "xterm";
 
 static void stop_handler(int signal_number) { (void)signal_number; stopping = 1; }
@@ -128,7 +133,7 @@ static void draw_panel(void)
     int n = 0;
     for (int i = 0; i < CLIENTS; i++) if (clients[i].window) n++;
     XClearWindow(display, panel);
-    text(panel, 8, 17, "Terminal +", foreground, 10);
+    text(panel, 8, 17, "WiiDesk +", foreground, 10);
     int width = n ? (screen_width - 94) / n : 0;
     if (width > 150) width = 150;
     if (width < 1) return;
@@ -289,20 +294,69 @@ static void unmanage(struct client *c, int destroyed)
     if (active == c) { active = NULL; focus_next(CurrentTime); }
     client_list(); draw_panel();
 }
-static void launch_terminal(void)
+static void launch_app(int index)
 {
     pid_t child = fork();
     if (child == 0) {
         close(ConnectionNumber(display)); setsid();
-        execlp(terminal, terminal, (char *)NULL); _exit(127);
+        if (!index) execlp(terminal, terminal, (char *)NULL);
+        else execl(app_program, app_program, app_arguments[index], (char *)NULL);
+        perror("wiidesk-x11: launch"); _exit(127);
     }
-    if (child < 0) perror("fork terminal");
+    if (child < 0) perror("fork application");
+}
+static void draw_menu(void)
+{
+    XClearWindow(display, menu);
+    for (int i = 0; i < 4; i++) {
+        if (i == menu_selected) {
+            XSetForeground(display, gc, accent);
+            XFillRectangle(display, menu, gc, 4, 4 + i * 30, 172, 28);
+        }
+        text(menu, 14, 23 + i * 30, menu_labels[i], foreground, 20);
+    }
+}
+static void close_menu(void)
+{
+    if (!menu_open) return;
+    XUngrabKeyboard(display, CurrentTime); XUngrabPointer(display, CurrentTime);
+    XUnmapWindow(display, menu); menu_open = 0;
+}
+static void open_menu(Time time)
+{
+    if (menu_open) { close_menu(); return; }
+    XMapRaised(display, menu);
+    if (XGrabPointer(display, menu, False, ButtonPressMask | PointerMotionMask,
+        GrabModeAsync, GrabModeAsync, None, None, time) != GrabSuccess) {
+        XUnmapWindow(display, menu); return;
+    }
+    if (XGrabKeyboard(display, menu, False, GrabModeAsync, GrabModeAsync, time) != GrabSuccess) {
+        XUngrabPointer(display, time); XUnmapWindow(display, menu); return;
+    }
+    menu_open = 1; menu_selected = 0; draw_menu();
+}
+static void apply_preferences(void)
+{
+    struct preferences p; preferences_load(&p);
+    unsigned long old[] = { background, accent };
+    background = color(background_colors[p.background]); accent = color(accent_colors[p.accent]);
+    XSetWindowBackground(display, root, background); XClearWindow(display, root);
+    for (int i = 0; i < CLIENTS; i++) if (clients[i].window) draw_frame(&clients[i]);
+    draw_panel(); if (menu_open) draw_menu();
+    XFreeColors(display, DefaultColormap(display, screen), old, 2, 0);
 }
 static void button(XButtonEvent *e)
 {
+    if (menu_open) {
+        int selected = (e->y - 4) / 30;
+        int inside = e->x >= 4 && e->x < 176 && e->y >= 4 && e->y < 124;
+        close_menu();
+        if (inside && e->button == Button1) launch_app(selected);
+        return;
+    }
     if (e->window == panel) {
         if (e->button != Button1) return;
-        if (e->x < 94) { launch_terminal(); return; }
+        if (e->x < 94) { open_menu(e->time); return; }
         int n = 0;
         for (int i = 0; i < CLIENTS; i++) if (clients[i].window) n++;
         int width = n ? (screen_width - 94) / n : 0;
@@ -340,7 +394,17 @@ static void button(XButtonEvent *e)
 static void key(XKeyEvent *e)
 {
     KeySym sym = XLookupKeysym(e, 0);
-    if ((e->state & (ControlMask | Mod1Mask)) == (ControlMask | Mod1Mask) && sym == XK_Return) launch_terminal();
+    if (menu_open) {
+        if (sym == XK_Escape) close_menu();
+        else if (sym == XK_Up || sym == XK_Down) {
+            menu_selected = (menu_selected + (sym == XK_Up ? 3 : 1)) % 4; draw_menu();
+        } else if (sym == XK_Return || sym == XK_space) {
+            int selected = menu_selected; close_menu(); launch_app(selected);
+        }
+        return;
+    }
+    if (sym == XK_F1 && (e->state & Mod1Mask)) { open_menu(e->time); return; }
+    if ((e->state & (ControlMask | Mod1Mask)) == (ControlMask | Mod1Mask) && sym == XK_Return) launch_app(0);
     else if (e->state & Mod1Mask) {
         if (sym == XK_Tab) focus_next(e->time);
         else if (sym == XK_F4) close_client(active, e->time);
@@ -366,6 +430,9 @@ static void configure_request(XConfigureRequestEvent *e)
 }
 static void message(XClientMessageEvent *e)
 {
+    if (e->message_type == reload_settings && e->window == root && e->format == 32) {
+        apply_preferences(); return;
+    }
     struct client *c = find(e->window); if (!c || e->format != 32) return;
     if (e->message_type == net_active) focus(c, e->data.l[1]);
     else if (e->message_type == net_close) close_client(c, e->data.l[0]);
@@ -398,11 +465,15 @@ static void event(XEvent *e)
         if (c && (e->xproperty.atom == XA_WM_NAME || e->xproperty.atom == net_name)) { update_title(c); draw_frame(c); draw_panel(); }
         if (c && e->xproperty.atom == XA_WM_NORMAL_HINTS) { long supplied; memset(&c->hints, 0, sizeof(c->hints)); XGetWMNormalHints(display, c->window, &c->hints, &supplied); }
         break;
-    case Expose: if (!e->xexpose.count) { if (e->xexpose.window == panel) draw_panel(); else if (c) draw_frame(c); } break;
+    case Expose: if (!e->xexpose.count) { if (e->xexpose.window == panel) draw_panel(); else if (e->xexpose.window == menu) draw_menu(); else if (c) draw_frame(c); } break;
     case ButtonPress: button(&e->xbutton); break;
     case KeyPress: key(&e->xkey); break;
     case ClientMessage: message(&e->xclient); break;
     case MotionNotify:
+        if (menu_open && e->xmotion.x >= 4 && e->xmotion.x < 176 && e->xmotion.y >= 4 && e->xmotion.y < 124) {
+            int selected = (e->xmotion.y - 4) / 30;
+            if (selected != menu_selected) { menu_selected = selected; draw_menu(); }
+        }
         if (drag) {
             outline();
             int dx = e->xmotion.x_root - pointer_x, dy = e->xmotion.y_root - pointer_y;
@@ -419,6 +490,7 @@ static void event(XEvent *e)
 }
 static void setup_atoms(void)
 {
+    reload_settings = atom(SETTINGS_MESSAGE);
     wm_protocols = atom("WM_PROTOCOLS"); wm_delete = atom("WM_DELETE_WINDOW"); wm_take_focus = atom("WM_TAKE_FOCUS");
     wm_state = atom("WM_STATE"); wm_change_state = atom("WM_CHANGE_STATE");
     net_active = atom("_NET_ACTIVE_WINDOW"); net_clients = atom("_NET_CLIENT_LIST");
@@ -434,6 +506,14 @@ int main(int argc, char **argv)
 {
     if (argc == 3 && !strcmp(argv[1], "--terminal")) terminal = argv[2];
     else if (argc != 1) { fprintf(stderr, "Usage: %s [--terminal PROGRAM]\n", argv[0]); return argc == 2 && !strcmp(argv[1], "--help") ? 0 : 1; }
+    ssize_t executable_length = readlink("/proc/self/exe", app_program, sizeof(app_program) - 1);
+    if (executable_length < 0 || executable_length >= (ssize_t)sizeof(app_program) - 1) {
+        fprintf(stderr, "wiidesk-x11: cannot locate companion applications\n"); return 1;
+    }
+    app_program[executable_length] = 0;
+    char *name = strrchr(app_program, '/');
+    if (!name || (size_t)(name + 1 - app_program) + strlen("wiidesk-x11-app") >= sizeof(app_program)) return 1;
+    strcpy(name + 1, "wiidesk-x11-app");
     display = XOpenDisplay(NULL);
     if (!display) { fprintf(stderr, "wiidesk-x11: cannot open DISPLAY\n"); return 1; }
     screen = DefaultScreen(display); root = RootWindow(display, screen);
@@ -444,8 +524,9 @@ int main(int argc, char **argv)
     XSync(display, False);
     if (ownership_error) { fprintf(stderr, "wiidesk-x11: another window manager is running\n"); XCloseDisplay(display); return 1; }
     setup_atoms();
-    background = color("#244b59"); foreground = color("#f0f4f5"); muted = color("#aabdc3");
-    accent = color("#007f78"); border = color("#263137");
+    struct preferences p; preferences_load(&p);
+    background = color(background_colors[p.background]); foreground = color("#f0f4f5"); muted = color("#aabdc3");
+    accent = color(accent_colors[p.accent]); border = color("#263137");
     XSetWindowBackground(display, root, background); XClearWindow(display, root);
     Cursor cursor = XCreateFontCursor(display, XC_left_ptr); XDefineCursor(display, root, cursor); XFreeCursor(display, cursor);
     gc = XCreateGC(display, root, 0, NULL); font = XLoadQueryFont(display, "8x13");
@@ -457,6 +538,10 @@ int main(int argc, char **argv)
     panel = XCreateWindow(display, root, 0, screen_height - PANEL, screen_width, PANEL,
                           0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
     XStoreName(display, panel, "WiiDesk Panel"); XMapRaised(display, panel);
+    a.event_mask = ExposureMask | ButtonPressMask | PointerMotionMask | KeyPressMask;
+    menu = XCreateWindow(display, root, 4, screen_height - PANEL - 132, 180, 128,
+                         0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
+    XStoreName(display, menu, "WiiDesk Launcher");
     check = XCreateSimpleWindow(display, root, -1, -1, 1, 1, 0, 0, 0);
     unsigned long self = check, one = 1, zero = 0, area[] = {0, 0, screen_width, screen_height - PANEL};
     property(root, net_check, XA_WINDOW, &self, 1); property(check, net_check, XA_WINDOW, &self, 1);
@@ -466,7 +551,7 @@ int main(int argc, char **argv)
     property(root, net_supported, XA_ATOM, supported, sizeof(supported) / sizeof(supported[0]));
     property(root, net_desktops, XA_CARDINAL, &one, 1); property(root, net_current, XA_CARDINAL, &zero, 1);
     property(root, net_workarea, XA_CARDINAL, area, 4); client_list();
-    const KeySym keys[] = { XK_Tab, XK_F4, XK_F9, XK_F10, XK_Return };
+    const KeySym keys[] = { XK_Tab, XK_F1, XK_F4, XK_F9, XK_F10, XK_Return };
     for (unsigned int i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         unsigned int modifiers = Mod1Mask | (keys[i] == XK_Return ? ControlMask : 0);
         for (unsigned int j = 0; j < 4; j++) XGrabKey(display, XKeysymToKeycode(display, keys[i]),
@@ -491,7 +576,7 @@ int main(int argc, char **argv)
         if (poll(&p, 1, 200) < 0 && errno != EINTR) break;
         if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) break;
     }
-    cancel_drag();
+    close_menu(); cancel_drag();
     for (int i = 0; i < CLIENTS; i++) if (clients[i].window) {
         Window w = clients[i].window; unmanage(&clients[i], 0); XMapWindow(display, w);
     }
@@ -499,7 +584,7 @@ int main(int argc, char **argv)
     XDeleteProperty(display, root, net_check); XDeleteProperty(display, root, net_supported);
     XDeleteProperty(display, root, net_clients); XDeleteProperty(display, root, net_active);
     XDeleteProperty(display, root, net_workarea); XDeleteProperty(display, root, net_desktops); XDeleteProperty(display, root, net_current);
-    XDestroyWindow(display, panel); XDestroyWindow(display, check);
+    XDestroyWindow(display, panel); XDestroyWindow(display, menu); XDestroyWindow(display, check);
     if (font) XFreeFont(display, font);
     XFreeGC(display, gc); XFreeGC(display, outline_gc); XCloseDisplay(display);
     return 0;
