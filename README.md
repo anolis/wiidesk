@@ -57,11 +57,30 @@ On a Wii Linux NXT system with DRM/KMS active:
 
 The DRM device argument is optional and defaults to `/dev/dri/card0`.
 
+## X11 window manager
+
+The optional `wiidesk-x11` executable manages ordinary X11 applications itself.
+It provides window frames, click-to-focus, outline move/resize, minimize,
+maximize, close, a task panel, and a terminal launcher. It runs as the session
+user under Xorg and refuses to start if another window manager owns the display.
+
+```sh
+make CROSS_COMPILE= BUILD_DIR=build/host wiidesk-x11 x11-test-client
+```
+
+This build requires Xlib development headers and libraries. See
+[X11 build, session, and tests](docs/x11.md) for PowerPC cross builds and isolated
+testing. The native DRM build and boot session remain unchanged. The X11
+implementation is an initial window manager; the native greeter, file browser,
+and other built-in desktop apps have not yet been integrated into it.
+
 ## Source Layout
 
 - `src/wiidesk.c`: desktop, windows, input, greeter, terminal, files, and VNC
 - `src/drm_backend.c`: raw standard DRM/KMS dumb-buffer and page-flip backend
 - `src/font_8x16.c`: GPL Linux VGA 8x16 font data
+- `src/wiidesk_x11.c`: optional non-compositing X11 window manager
+- `tests/`: X11 client lifecycle and pointer/keyboard integration checks
 - `scripts/build-libvncserver.sh`: pinned minimal PowerPC VNC dependency build
 
 The pre-split development history is preserved on the historical

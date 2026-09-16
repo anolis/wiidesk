@@ -47,3 +47,19 @@ $(BUILD_DIR)/wiidesk-vnc: src/wiidesk.c src/drm_backend.c src/font_8x16.c \
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Optional X11 window manager; native DRM targets remain dependency-free.
+# X11_CPPFLAGS/X11_LDFLAGS can point to an extracted PowerPC development sysroot.
+X11_CPPFLAGS ?=
+X11_LDFLAGS ?=
+X11_LIBS ?= -lX11
+.PHONY: wiidesk-x11 x11-test-client
+wiidesk-x11: $(BUILD_DIR)/wiidesk-x11
+x11-test-client: $(BUILD_DIR)/x11-wm-smoke
+$(BUILD_DIR)/wiidesk-x11: src/wiidesk_x11.c
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) $< -o $@ $(X11_LDFLAGS) $(X11_LIBS)
+
+$(BUILD_DIR)/x11-wm-smoke: tests/x11_wm_smoke.c
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) $< -o $@ $(X11_LDFLAGS) $(X11_LIBS)
