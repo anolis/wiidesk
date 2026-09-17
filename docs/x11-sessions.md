@@ -237,11 +237,44 @@ physical lock/unlock, and physical VT/zap shortcut checks remain pending;
 automated input does not substitute for them.
 
 Boot diagnostics reported an unclean FAT volume on `/dev/mmcblk0p1`, mounted at
-`/boot/firmware`. No filesystem repair was attempted on the mounted volume;
-an offline filesystem check remains a follow-up. The missing `regulatory.db`
+`/boot/firmware`; the unmounted check and repair are recorded below.
+The missing `regulatory.db`
 warning also remains, although Wi-Fi obtained its expected address. Early XDM
 timestamps precede network clock synchronization, so use kernel uptime and the
 boot ID when interpreting this boot's logs.
 
 Suspend/hibernate remain unavailable for the reasons in
 [the power-management assessment](wii-power-management.md).
+
+### Boot FAT check and repair
+
+The target was missing `fsck.fat`, despite `/etc/fstab` requesting a pass-2
+check of the FAT boot partition. The SysV checkfs and shutdown unmount services
+were present. Downloaded `dosfstools` 4.2-1.2 for PowerPC on the host, verified
+SHA-256 against the cached Debian Ports package index, transferred it, and
+installed with `dpkg`. No apt command ran on the Wii; its existing libc6
+satisfied the only dependency.
+
+With `/boot/firmware` unmounted, `fsck.fat -n -v` found the dirty bit and a
+one-byte primary/backup boot-sector difference at offset 65 (`01/00`), without
+allocation or directory errors. Before repair, the complete 128 MiB partition
+was copied to `/var/tmp/wiidesk-boot-fsck-20260916/boot-before.img`. Both device
+and backup hashed to:
+
+```text
+0cca964fa3a2306c98f8e038bcce658cabaf18aedc61257fc6d50998cf998686
+```
+
+`fsck.fat -a -v` cleared the dirty flag. The subsequent read-only check returned
+zero with no sector mismatch; 27 files and 232037 allocated clusters remained.
+A further mount/unmount/read-only-check cycle also passed. The partition was
+remounted with its fstab options, and X11 remained ready with a successful
+display probe. The SD-to-SD backup took 196 seconds and temporarily slowed SSH.
+This does not establish when the dirty flag was originally set, or verify a
+second full shutdown/power-on cycle.
+
+Host evidence is in `/media/anolis/dev/wiidesk-boot-fsck-20260916/results.txt`;
+the Wii directory of the same name under `/var/tmp` retains the backup and
+individual logs. WiiDesk OS commit `77471c8` adds `dosfstools` to future images
+and requires the target checker in image verification. Shell syntax,
+ShellCheck, and diff checks passed; a complete OS image was not rebuilt.
