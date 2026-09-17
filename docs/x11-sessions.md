@@ -210,9 +210,38 @@ Artifacts: `/media/anolis/dev/wiidesk-x11-boot-20260916` on the host and
 `/var/tmp/wiidesk-x11-boot-20260916` on the Wii. The previous session payload is
 saved as `previous-session` in the Wii artifact directory.
 
-Pending verification is a real cold boot and hands-on keyboard testing.
-The Wii was not rebooted because the earlier desktop still has open apps.
-Physical checks should cover username/password entry, Caps Lock, lock/unlock,
-VT/zap shortcuts, and login after a full power cycle. Automated input does not
-substitute for those checks. Suspend/hibernate remain unavailable for the
-reasons in [the power-management assessment](wii-power-management.md).
+### Cold boot, 2026-09-16 (local time)
+
+The editor closed cleanly before an orderly `shutdown -h now`. SSH became
+unreachable and the capture feed went black. The operator powered the Wii back
+on after the requested ten-second wait. The boot ID changed from
+`444193a6-aee4-4ae3-a619-4f6dd90fccf1` to
+`a6fda003-5e2f-4127-b122-4cabf880676e`, running `6.18.40-wii+`.
+
+Without a manual service start, native WiiDesk started as PID 858, followed by
+the supervisor (870), XDM (873), and Xorg (879) on display :1 / VT9. The old
+manual :0 session did not return. The service reached `X11 ready`, the display
+probe returned zero, and the login greeter was visually checked in
+`cold-boot.png` in the host artifact directory. Xorg detected the Dell USB
+keyboard. This verifies automatic startup to the greeter after power-off.
+
+The operator completed physical keyboard login and confirmed the desktop
+taskbar. A subsequent remote check confirmed WiiDesk X11 running as user `wii`
+(PID 1231), `X11 ready`, and a successful display probe. XDM recorded session
+startup at 00:07:13 UTC on September 17. The attempted desktop capture
+(`cold-boot-desktop.png`) is black, so desktop appearance is confirmed by the
+operator rather than that image. An earlier capture (`cold-boot-login.png`)
+preceded completed login and still showed the greeter. The cold-boot-to-desktop
+test passed. Caps Lock,
+physical lock/unlock, and physical VT/zap shortcut checks remain pending;
+automated input does not substitute for them.
+
+Boot diagnostics reported an unclean FAT volume on `/dev/mmcblk0p1`, mounted at
+`/boot/firmware`. No filesystem repair was attempted on the mounted volume;
+an offline filesystem check remains a follow-up. The missing `regulatory.db`
+warning also remains, although Wi-Fi obtained its expected address. Early XDM
+timestamps precede network clock synchronization, so use kernel uptime and the
+boot ID when interpreting this boot's logs.
+
+Suspend/hibernate remain unavailable for the reasons in
+[the power-management assessment](wii-power-management.md).
