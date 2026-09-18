@@ -233,8 +233,8 @@ startup at 00:07:13 UTC on September 17. The attempted desktop capture
 operator rather than that image. An earlier capture (`cold-boot-login.png`)
 preceded completed login and still showed the greeter. The cold-boot-to-desktop
 test passed. Caps Lock,
-physical lock/unlock, and physical VT/zap shortcut checks remain pending;
-automated input does not substitute for them.
+physical lock/unlock, and physical VT/zap shortcut checks were initially pending;
+the subsequent physical results are recorded below.
 
 Boot diagnostics reported an unclean FAT volume on `/dev/mmcblk0p1`, mounted at
 `/boot/firmware`; the unmounted check and repair are recorded below.
@@ -278,3 +278,16 @@ the Wii directory of the same name under `/var/tmp` retains the backup and
 individual logs. WiiDesk OS commit `77471c8` adds `dosfstools` to future images
 and requires the target checker in image verification. Shell syntax,
 ShellCheck, and diff checks passed; a complete OS image was not rebuilt.
+
+### Physical checks and second cold boot
+
+The operator confirmed Ctrl+Alt+L locking, blocked Ctrl+Alt+F7 and
+Ctrl+Alt+Backspace while locked, and password unlock to the same desktop. Mouse
+launching, Caps Lock text entry, Editor save/reopen, Files copy/trash, and the
+Processes memory column all passed hands-on checks.
+
+After an orderly second poweroff and operator power-on, the boot ID was
+`4a7f7d66-c289-4628-b69f-f0eef4f405df`. X11 started automatically, reported
+`X11 ready`, and the display health check returned zero. The new boot log had
+no FAT warning. This validates the filesystem repair across a full power cycle.
+The operator also reported low frame rate; see [the measured X11 baseline](x11-performance.md).
