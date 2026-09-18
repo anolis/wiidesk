@@ -80,9 +80,22 @@ Evidence: `/tmp/wiidesk-desktop-test.T89KYy` and
 Wi-Fi transaction tests passed through the Makefile target; the PowerPC build
 also passed with warnings treated as errors.
 
-The initial utility binaries are installed on the Wii and its supervisor
-reports `X11 ready`. The calculator backend test passed on hardware. Desktop
-interaction checks remain pending because the current session is locked;
-the attempted smoke test produced no passing UI results. New launcher entries
-and netdev membership become available to the existing session after normal
-logout/login. No real Wi-Fi profile switch has been tested.
+The updated utility binaries are installed on the Wii. After normal password
+authentication, hardware GUI checks passed for calculator results, division
+errors and history; log open/filter/append/rotation; network status and a TCP
+check against the Wii's local SSH listener. Resident memory was 3468 KiB for
+Calculator, 3268 KiB for Logs and 3304 KiB for Network (single samples, not peak
+memory measurements). Wi-Fi remained COMPLETED and the supervisor reported
+`X11 ready`. Hardware fixture: `/tmp/wiidesk-utility-hardware.vQCWvf` on the Wii.
+The earlier locked-session attempts produced no passing UI results.
+
+The operator traced the apparent black/unresponsive screen to a frozen VLC
+capture window. A reported stuck authentication attempt had already failed;
+normal authentication with the supplied password subsequently succeeded.
+The session later relocked after its five-minute idle timeout. No lock bypass,
+password change, or desktop restart was used to complete these checks.
+
+New launcher entries and netdev membership become available to the existing
+session after normal logout/login. Tests launched the new binary directly as
+`wii` with fresh supplementary groups. No real Wi-Fi profile switch has been
+tested.
