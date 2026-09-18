@@ -116,19 +116,15 @@ def main():
     wait_for(lambda: (folder / 'new-folder').is_dir(), 'new folder created')
     close(files)
 
-    # Discover and terminate only the sleep process created by this test. IDs
-    # are selected by sorted PID rows, never by searching arbitrary process names.
+    # Find and terminate only the sleep process created by this test. Explicit
+    # PID filtering also works when a busy host exceeds the bounded 512-row list.
     # It must exit because of our TERM request, even on a slow test host.
     victim = subprocess.Popen(['sleep', '86400'])
     try:
         processes = launch(5, '^WiiDesk Processes$')
-        keys('F5', 'Home')
-        for _ in range(512):
-            selected_pid = run('xprop', '-id', processes, '_WIIDESK_SELECTED_PID')
-            if selected_pid.endswith(f'= {victim.pid}'):
-                break
-            keys('Down')
-        assert selected_pid.endswith(f'= {victim.pid}'), selected_pid
+        keys('ctrl+f')
+        dialog(str(victim.pid))
+        wait_for(lambda: run('xprop', '-id', processes, '_WIIDESK_SELECTED_PID').endswith(f'= {victim.pid}'), 'own process selected by PID')
         keys('Delete', 'Escape')
         assert victim.poll() is None
         keys('Delete', 'Return')

@@ -21,6 +21,8 @@
 #include "x11_controls.h"
 #include "x11_app_io.h"
 #include "x11_session.h"
+#include "x11_utilities.h"
+#include "x11_network.h"
 #include <pwd.h>
 
 #define ENTRIES 512
@@ -44,10 +46,11 @@ static char editor_path[PATH_MAX];
 static char process_lines[512][96];
 static struct process { pid_t pid; unsigned long long start, ticks; unsigned long rss; unsigned int cpu; char name[64]; } processes[512];
 static int process_count, editor_top;
+static pid_t process_filter;
 static struct document_stamp editor_stamp;
 static struct ui_text dialog_text;
 static int dialog_top;
-static enum { D_NONE, D_OPEN, D_SAVE, D_FIND, D_CLOSE, D_DISCARD_OPEN, D_MKDIR, D_RENAME, D_COPY, D_MOVE, D_TRASH, D_TERM, D_FOLDER, D_LOGOUT, D_FORCE_LOGOUT } dialog;
+static enum { D_NONE, D_OPEN, D_SAVE, D_FIND, D_CLOSE, D_DISCARD_OPEN, D_MKDIR, D_RENAME, D_COPY, D_MOVE, D_TRASH, D_TERM, D_FOLDER, D_LOGOUT, D_FORCE_LOGOUT, D_PID } dialog;
 static char dialog_label[160], op_source[PATH_MAX];
 static struct stat op_stamp;
 static int process_fd = -1;
@@ -225,6 +228,7 @@ static void process_refresh(void)
     while ((e = readdir(d))) {
         char *end; long pid = strtol(e->d_name, &end, 10);
         if (*end || pid <= 0 || pid > INT_MAX) continue;
+        if (process_filter && pid != process_filter) continue;
         if (process_count == 512) { capped = 1; break; }
         struct process p; if (process_read((pid_t)pid, &p)) continue;
         for (int i = 0; i < old_count && sampled && now > sampled; i++) {
@@ -244,6 +248,7 @@ static void process_refresh(void)
     }
     process_list.count = process_count; ui_list_reveal(&process_list, page_rows());
     if (capped) snprintf(status, sizeof(status), "Showing first 512 processes");
+    else if (process_filter) snprintf(status, sizeof(status), "PID %ld: %s | Ctrl+L shows all", (long)process_filter, process_count ? "filtered" : "not running or unavailable");
 }
 static void editor_load(const char *path)
 {
@@ -357,6 +362,14 @@ static void process_action(void)
 static void accept_dialog(void)
 {
     int action = dialog; char target[PATH_MAX];
+    if (action == D_PID) {
+        char *end; errno = 0; long pid = strtol(dialog_text.data, &end, 10);
+        if (errno || !dialog_text.length || *end || pid <= 0 || pid > INT_MAX) {
+            end_dialog(); strcpy(status, "Enter a positive numeric process ID"); return;
+        }
+        process_filter = (pid_t)pid; process_list.selected = process_list.scroll = 0;
+        end_dialog(); process_refresh(); return;
+    }
     if (action == D_LOGOUT || action == D_FORCE_LOGOUT) {
         end_dialog(); session_send(action == D_LOGOUT ? SESSION_LOGOUT : SESSION_FORCE_LOGOUT); return;
     }
@@ -464,12 +477,14 @@ static void draw(void)
         XChangeProperty(display, window, XInternAtom(display, "_WIIDESK_SELECTED_PID", False), XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&pid, 1);
         ui_button(&shared_ui, 8, 8, 90, "Refresh", 0);
         ui_button(&shared_ui, 104, 8, 110, "End process", 0);
+        ui_button(&shared_ui, 220, 8, 80, "PID...", 0);
+        ui_button(&shared_ui, 306, 8, 44, "All", 0);
         text(16, 51, "   PID   CPU      Memory   Name", muted);
         for (int i = 0; i < page_rows() && process_list.scroll + i < process_count; i++) {
             if (process_list.scroll + i == process_list.selected) rectangle(8, 64 + i * ROW, width - 16, ROW, accent);
             text(16, 80 + i * ROW, process_lines[process_list.scroll + i], foreground);
         }
-        text(16, height - 32, "Up/Down select | Delete requests TERM", muted);
+        text(16, height - 32, "Ctrl+F PID | Ctrl+L all | Delete TERM", muted);
         text(16, height - 14, status, muted);
     }
     if (dialog) {
@@ -547,6 +562,8 @@ static void key(XKeyEvent *e)
         }
         dirty = 1; return;
     } else if (app == PROCESSES) {
+        if ((e->state & ControlMask) && k == XK_f) begin_dialog(D_PID, "Find process by PID", "");
+        if ((e->state & ControlMask) && k == XK_l) { process_filter = 0; strcpy(status, "Showing all processes"); process_refresh(); }
         if (ui_list_key(&process_list, k, page_rows())) dirty = 1;
         if (k == XK_F5) { process_refresh(); dirty = 1; }
         if (k == XK_Delete) process_action();
@@ -615,6 +632,8 @@ static void button(XButtonEvent *e)
         if (e->button == Button1) {
             if (ui_hit(e->x, e->y, 8, 8, 90, 24)) process_refresh();
             else if (ui_hit(e->x, e->y, 104, 8, 110, 24)) process_action();
+            else if (ui_hit(e->x, e->y, 220, 8, 80, 24)) begin_dialog(D_PID, "Find process by PID", "");
+            else if (ui_hit(e->x, e->y, 306, 8, 44, 24)) { process_filter = 0; strcpy(status, "Showing all processes"); process_refresh(); }
             else if (e->y >= 64 && e->y < 64 + page_rows() * ROW) { process_list.selected = process_list.scroll + (e->y - 64) / ROW; ui_list_reveal(&process_list, page_rows()); }
         }
     }
@@ -644,8 +663,10 @@ static void button(XButtonEvent *e)
 }
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "network")) return x11_network_main();
+    if (argc > 1 && x11_utility_supported(argv[1])) return x11_utility_main(argc, argv);
     if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[1], "editor")) || (strcmp(argv[1], "files") && strcmp(argv[1], "system") && strcmp(argv[1], "settings") && strcmp(argv[1], "editor") && strcmp(argv[1], "processes") && strcmp(argv[1], "session"))) {
-        fprintf(stderr, "Usage: %s files|system|settings|processes|session|editor [FILE]\n", argv[0]); return 1;
+        fprintf(stderr, "Usage: %s files|system|settings|processes|session|network|calculator|editor [FILE]|logs [FILE]\n", argv[0]); return 1;
     }
     app = !strcmp(argv[1], "files") ? FILES : !strcmp(argv[1], "system") ? SYSTEM : !strcmp(argv[1], "settings") ? SETTINGS : !strcmp(argv[1], "editor") ? EDITOR : !strcmp(argv[1], "session") ? SESSION : PROCESSES;
     display = XOpenDisplay(NULL);

@@ -15,11 +15,11 @@ buttons, dialogs, clipboard, and consistent keyboard navigation.
 | Text Editor | Open/save dialogs, plain-text editing, search, undo, selection, clipboard, and configuration editing | Implemented and host-tested for bounded ASCII text; hardware file/control tests and startup/display verified |
 | File Manager | Extend Files with copy, move, rename, new folders, and recoverable trash | Implemented and host-tested for regular-file copy, same-filesystem moves, and last-trash restore; hardware file/control tests and startup verified |
 | Process Manager | Per-process CPU/memory, refresh, selection, and deliberate termination of stuck applications | Implemented and host-tested, including confirmed termination of a disposable process; hardware startup/display verified |
-| Network Settings | Connection status, IP/DNS details, connectivity checks, and connection configuration | Planned |
+| Network Settings | Connection status, IP/DNS details, connectivity checks, and connection configuration | Implemented and host-tested for status, bounded DNS/TCP checks, and WPA/WPA2 personal profiles with DHCP; control-socket transaction tests cover save-failure rollback and cancellation; hardware verification pending |
 | Image Viewer | Browse pictures, fit-to-screen, zoom, and bounded image decoding | Planned |
-| Log Viewer | Follow logs, filter messages, pause, and search | Planned |
+| Log Viewer | Follow logs, filter messages, pause, and search | Implemented and host-tested for regular ASCII logs; bounded tail, rotation/truncation handling and substring filtering; hardware verification pending |
 | Archive Manager | List and extract archives, with progress and cancellation | Planned |
-| Calculator | Basic arithmetic, scientific functions, and history | Planned |
+| Calculator | Basic arithmetic, scientific functions, and history | Implemented and host-tested; radians, bounded expression parser and 64-entry in-memory history; hardware verification pending |
 | Package Installer | Inspect/install transferred `.deb` bundles using `dpkg`; resolve/download dependencies on the host | Planned |
 | Audio Player | Local playback, playlists, and simple controls | Planned |
 

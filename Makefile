@@ -58,7 +58,21 @@ X11_SESSION_LIBS ?= -lXss
 wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health
 x11-test-client: $(BUILD_DIR)/x11-wm-smoke
 
-.PHONY: x11-controls-test
+.PHONY: x11-controls-test calculator-test utility-unit-tests
+# Run on the host with CROSS_COMPILE=; the fake Wi-Fi socket never uses wlan0.
+utility-unit-tests: $(BUILD_DIR)/calculator-test $(BUILD_DIR)/wifi-control-test.so
+	$(BUILD_DIR)/calculator-test
+	python3 tests/wifi_control_test.py $(BUILD_DIR)/wifi-control-test.so
+
+$(BUILD_DIR)/wifi-control-test.so: src/wifi_control.c src/wifi_control.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror -fPIC -shared src/wifi_control.c -o $@
+
+calculator-test: $(BUILD_DIR)/calculator-test
+$(BUILD_DIR)/calculator-test: tests/calculator_test.c src/calculator.c src/calculator.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror -Isrc tests/calculator_test.c src/calculator.c -lm -o $@
+
 x11-controls-test: $(BUILD_DIR)/x11-controls-test
 $(BUILD_DIR)/x11-controls-test: tests/x11_controls_io_test.c src/x11_controls.c src/x11_app_io.c src/x11_controls.h src/x11_app_io.h
 	mkdir -p $(BUILD_DIR)
@@ -75,6 +89,6 @@ $(BUILD_DIR)/x11-wm-smoke: tests/x11_wm_smoke.c
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) $< -o $@ $(X11_LDFLAGS) $(X11_LIBS)
 
-$(BUILD_DIR)/wiidesk-x11-app: src/wiidesk_x11_app.c src/x11_preferences.h src/x11_controls.c src/x11_controls.h src/x11_app_io.c src/x11_app_io.h src/x11_session.h
+$(BUILD_DIR)/wiidesk-x11-app: src/wiidesk_x11_app.c src/x11_preferences.h src/x11_controls.c src/x11_controls.h src/x11_app_io.c src/x11_app_io.h src/x11_session.h src/x11_utilities.c src/x11_utilities.h src/calculator.c src/calculator.h src/x11_network.c src/x11_network.h src/wifi_control.c src/wifi_control.h
 	mkdir -p $(BUILD_DIR)
-	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) src/wiidesk_x11_app.c src/x11_controls.c src/x11_app_io.c -o $@ $(X11_LDFLAGS) $(X11_LIBS)
+	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) src/wiidesk_x11_app.c src/x11_controls.c src/x11_app_io.c src/x11_utilities.c src/calculator.c src/x11_network.c src/wifi_control.c -o $@ $(X11_LDFLAGS) $(X11_LIBS) -lm

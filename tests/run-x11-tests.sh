@@ -44,6 +44,7 @@ python3 tests/x11_pointer_smoke.py
 python3 tests/x11_desktop_smoke.py
 "$build/x11-controls-test"
 python3 tests/x11_core_apps_smoke.py
+python3 tests/x11_utilities_smoke.py
 kill -TERM "$wm_pid"
 wait "$wm_pid"
 wm_pid=
