@@ -4,7 +4,7 @@ set -eu
 [ "$(id -u)" -eq 0 ]
 target=/usr/local/lib/wiidesk-session
 install -d -m 755 "$target"
-for binary in wiidesk-x11 wiidesk-x11-app wiidesk-session-health; do
+for binary in wiidesk-x11 wiidesk-x11-app wiidesk-session-health wiidesk-x11-image; do
     install -m 755 "build/x11/$binary" "$target/$binary.new"
     mv -f "$target/$binary.new" "$target/$binary"
 done

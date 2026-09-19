@@ -54,8 +54,19 @@ X11_CPPFLAGS ?=
 X11_LDFLAGS ?=
 X11_LIBS ?= -lX11
 X11_SESSION_LIBS ?= -lXss
+IMAGE_LIBS ?= -lpng -ljpeg
+.PHONY: image-tests image-probe
+image-probe: $(BUILD_DIR)/image-decode-probe
+$(BUILD_DIR)/image-decode-probe: tests/image_decode_probe.c src/image_decode.c src/image_decode.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror -Isrc $(X11_CPPFLAGS) tests/image_decode_probe.c src/image_decode.c -o $@ $(X11_LDFLAGS) $(IMAGE_LIBS)
+image-tests: $(BUILD_DIR)/image-decode-test.so
+	python3 tests/image_decode_test.py $(BUILD_DIR)/image-decode-test.so
+$(BUILD_DIR)/image-decode-test.so: src/image_decode.c src/image_decode.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror -fPIC -shared $(X11_CPPFLAGS) src/image_decode.c -o $@ $(X11_LDFLAGS) $(IMAGE_LIBS)
 .PHONY: wiidesk-x11 x11-test-client
-wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health
+wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health $(BUILD_DIR)/wiidesk-x11-image
 x11-test-client: $(BUILD_DIR)/x11-wm-smoke
 
 .PHONY: x11-controls-test calculator-test utility-unit-tests
@@ -84,6 +95,10 @@ $(BUILD_DIR)/wiidesk-x11: src/wiidesk_x11.c src/x11_preferences.h src/x11_sessio
 $(BUILD_DIR)/wiidesk-session-health: src/x11_session_health.c
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) $< -o $@ $(X11_LDFLAGS) $(X11_LIBS)
+
+$(BUILD_DIR)/wiidesk-x11-image: src/x11_image.c src/image_decode.c src/image_decode.h src/x11_controls.c src/x11_controls.h src/x11_preferences.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) src/x11_image.c src/image_decode.c src/x11_controls.c -o $@ $(X11_LDFLAGS) $(X11_LIBS) $(IMAGE_LIBS) -lm
 
 $(BUILD_DIR)/x11-wm-smoke: tests/x11_wm_smoke.c
 	mkdir -p $(BUILD_DIR)

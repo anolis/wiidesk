@@ -19,7 +19,11 @@ trap 'exit 130' INT TERM
 mkdir "$test_dir/home"
 touch "$test_dir/Xauthority"
 xauth -f "$test_dir/Xauthority" add "$test_display" . "$(mcookie)"
-Xephyr "$test_display" -screen 640x480 -nolisten tcp -auth "$test_dir/Xauthority" >"$test_dir/server.log" 2>&1 &
+if [ -n "${WIIDESK_TEST_XVFB:-}" ]; then
+    "$WIIDESK_TEST_XVFB" "$test_display" -screen 0 "${WIIDESK_TEST_SCREEN:-640x480x24}" -nolisten tcp -auth "$test_dir/Xauthority" >"$test_dir/server.log" 2>&1 &
+else
+    Xephyr "$test_display" -screen "${WIIDESK_TEST_SCREEN:-640x480}" -nolisten tcp -auth "$test_dir/Xauthority" >"$test_dir/server.log" 2>&1 &
+fi
 server_pid=$!
 export DISPLAY="$test_display" XAUTHORITY="$test_dir/Xauthority"
 export HOME="$test_dir/home" WIIDESK_TEST_HOME="$test_dir/home"
@@ -45,6 +49,7 @@ python3 tests/x11_desktop_smoke.py
 "$build/x11-controls-test"
 python3 tests/x11_core_apps_smoke.py
 python3 tests/x11_utilities_smoke.py
+python3 tests/x11_image_smoke.py
 kill -TERM "$wm_pid"
 wait "$wm_pid"
 wm_pid=
