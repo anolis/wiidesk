@@ -55,6 +55,15 @@ X11_LDFLAGS ?=
 X11_LIBS ?= -lX11
 X11_SESSION_LIBS ?= -lXss
 IMAGE_LIBS ?= -lpng -ljpeg
+ARCHIVE_CPPFLAGS ?=
+ARCHIVE_LIBS ?= -larchive
+.PHONY: archive-tests archive-probe
+archive-probe: $(BUILD_DIR)/archive-probe
+$(BUILD_DIR)/archive-probe: tests/archive_probe.c src/archive_io.c src/archive_io.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror -Isrc $(X11_CPPFLAGS) $(ARCHIVE_CPPFLAGS) tests/archive_probe.c src/archive_io.c -o $@ $(X11_LDFLAGS) $(ARCHIVE_LIBS)
+archive-tests: $(BUILD_DIR)/archive-probe
+	python3 tests/archive_io_test.py $(BUILD_DIR)/archive-probe
 .PHONY: image-tests image-probe
 image-probe: $(BUILD_DIR)/image-decode-probe
 $(BUILD_DIR)/image-decode-probe: tests/image_decode_probe.c src/image_decode.c src/image_decode.h
@@ -66,7 +75,7 @@ $(BUILD_DIR)/image-decode-test.so: src/image_decode.c src/image_decode.h
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror -fPIC -shared $(X11_CPPFLAGS) src/image_decode.c -o $@ $(X11_LDFLAGS) $(IMAGE_LIBS)
 .PHONY: wiidesk-x11 x11-test-client
-wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health $(BUILD_DIR)/wiidesk-x11-image
+wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health $(BUILD_DIR)/wiidesk-x11-image $(BUILD_DIR)/wiidesk-x11-archive
 x11-test-client: $(BUILD_DIR)/x11-wm-smoke
 
 .PHONY: x11-controls-test calculator-test utility-unit-tests
@@ -99,6 +108,10 @@ $(BUILD_DIR)/wiidesk-session-health: src/x11_session_health.c
 $(BUILD_DIR)/wiidesk-x11-image: src/x11_image.c src/image_decode.c src/image_decode.h src/x11_controls.c src/x11_controls.h src/x11_preferences.h
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) src/x11_image.c src/image_decode.c src/x11_controls.c -o $@ $(X11_LDFLAGS) $(X11_LIBS) $(IMAGE_LIBS) -lm
+
+$(BUILD_DIR)/wiidesk-x11-archive: src/x11_archive.c src/archive_io.c src/archive_io.h src/x11_controls.c src/x11_controls.h src/x11_preferences.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) $(ARCHIVE_CPPFLAGS) src/x11_archive.c src/archive_io.c src/x11_controls.c -o $@ $(X11_LDFLAGS) $(X11_LIBS) $(ARCHIVE_LIBS)
 
 $(BUILD_DIR)/x11-wm-smoke: tests/x11_wm_smoke.c
 	mkdir -p $(BUILD_DIR)

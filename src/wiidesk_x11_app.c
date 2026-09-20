@@ -663,15 +663,16 @@ static void button(XButtonEvent *e)
 }
 int main(int argc, char **argv)
 {
-    if ((argc == 2 || argc == 3) && !strcmp(argv[1], "images")) {
+    if ((argc == 2 || argc == 3) && (!strcmp(argv[1], "images") || !strcmp(argv[1], "archives"))) {
+        const char *program=!strcmp(argv[1], "images")?"wiidesk-x11-image":"wiidesk-x11-archive";
         char executable[PATH_MAX];
         ssize_t n=readlink("/proc/self/exe",executable,sizeof(executable)-1);
         if(n<0 || n>=(ssize_t)sizeof(executable)-1)return 1;
         executable[n]=0; char *base=strrchr(executable,'/');
-        if(!base || (size_t)(base+1-executable)+strlen("wiidesk-x11-image")>=sizeof(executable))return 1;
-        strcpy(base+1,"wiidesk-x11-image");
+        if(!base || (size_t)(base+1-executable)+strlen(program)>=sizeof(executable))return 1;
+        strcpy(base+1,program);
         execl(executable,executable,argc==3?argv[2]:NULL,(char *)NULL);
-        perror("Image Viewer"); return 1;
+        perror(program); return 1;
     }
     if (argc == 2 && !strcmp(argv[1], "network")) return x11_network_main();
     if (argc > 1 && x11_utility_supported(argv[1])) return x11_utility_main(argc, argv);

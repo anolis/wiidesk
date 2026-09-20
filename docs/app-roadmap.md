@@ -18,7 +18,7 @@ buttons, dialogs, clipboard, and consistent keyboard navigation.
 | Network Settings | Connection status, IP/DNS details, connectivity checks, and connection configuration | Host-tested including profile rollback/cancellation; hardware status and local TCP check passed; real Wi-Fi profile switching remains unverified |
 | Image Viewer | Browse pictures, fit-to-screen, zoom, and bounded image decoding | Implemented for PNG/JPEG with fit, zoom/pan, bounded folder navigation and cancellable decoding; host/16-bit and Wii GUI checks passed; installed, launcher updates on next login; see [limits and evidence](image-viewer.md) |
 | Log Viewer | Follow logs, filter messages, pause, and search | Host-tested for bounded regular ASCII logs, pause, rotation/truncation and filtering; hardware open/filter/append/rotation passed |
-| Archive Manager | List and extract archives, with progress and cancellation | Planned |
+| Archive Manager | List and extract archives, with progress and cancellation | Implemented for ZIP/tar with bounded streaming, private output folders and incomplete markers; host/16-bit and Wii extraction/cancellation checks passed; installed, launcher updates on next login; see [rules and evidence](archive-manager.md) |
 | Calculator | Basic arithmetic, scientific functions, and history | Host and hardware tests passed for evaluation, errors and history; radians, bounded parser and 64-entry in-memory history |
 | Package Installer | Inspect/install transferred `.deb` bundles using `dpkg`; resolve/download dependencies on the host | Planned |
 | Audio Player | Local playback, playlists, and simple controls | Planned |
