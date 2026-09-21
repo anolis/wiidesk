@@ -663,8 +663,8 @@ static void button(XButtonEvent *e)
 }
 int main(int argc, char **argv)
 {
-    if ((argc == 2 || argc == 3) && (!strcmp(argv[1], "images") || !strcmp(argv[1], "archives"))) {
-        const char *program=!strcmp(argv[1], "images")?"wiidesk-x11-image":"wiidesk-x11-archive";
+    if ((argc == 2 || argc == 3) && (!strcmp(argv[1], "images") || !strcmp(argv[1], "archives") || !strcmp(argv[1], "packages"))) {
+        const char *program=!strcmp(argv[1], "images")?"wiidesk-x11-image":!strcmp(argv[1], "archives")?"wiidesk-x11-archive":"wiidesk-x11-packages";
         char executable[PATH_MAX];
         ssize_t n=readlink("/proc/self/exe",executable,sizeof(executable)-1);
         if(n<0 || n>=(ssize_t)sizeof(executable)-1)return 1;

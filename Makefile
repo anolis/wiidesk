@@ -57,6 +57,13 @@ X11_SESSION_LIBS ?= -lXss
 IMAGE_LIBS ?= -lpng -ljpeg
 ARCHIVE_CPPFLAGS ?=
 ARCHIVE_LIBS ?= -larchive
+.PHONY: package-tests package-probe
+package-probe: $(BUILD_DIR)/package-probe
+$(BUILD_DIR)/package-probe: tests/package_probe.c src/package_io.c src/package_io.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror -Isrc tests/package_probe.c src/package_io.c -o $@
+package-tests: $(BUILD_DIR)/package-probe
+	python3 tests/package_io_test.py $(BUILD_DIR)/package-probe
 .PHONY: archive-tests archive-probe
 archive-probe: $(BUILD_DIR)/archive-probe
 $(BUILD_DIR)/archive-probe: tests/archive_probe.c src/archive_io.c src/archive_io.h
@@ -75,7 +82,7 @@ $(BUILD_DIR)/image-decode-test.so: src/image_decode.c src/image_decode.h
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror -fPIC -shared $(X11_CPPFLAGS) src/image_decode.c -o $@ $(X11_LDFLAGS) $(IMAGE_LIBS)
 .PHONY: wiidesk-x11 x11-test-client
-wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health $(BUILD_DIR)/wiidesk-x11-image $(BUILD_DIR)/wiidesk-x11-archive
+wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health $(BUILD_DIR)/wiidesk-x11-image $(BUILD_DIR)/wiidesk-x11-archive $(BUILD_DIR)/wiidesk-x11-packages $(BUILD_DIR)/wiidesk-package-install $(BUILD_DIR)/wiidesk-package-terminal
 x11-test-client: $(BUILD_DIR)/x11-wm-smoke
 
 .PHONY: x11-controls-test calculator-test utility-unit-tests
@@ -112,6 +119,18 @@ $(BUILD_DIR)/wiidesk-x11-image: src/x11_image.c src/image_decode.c src/image_dec
 $(BUILD_DIR)/wiidesk-x11-archive: src/x11_archive.c src/archive_io.c src/archive_io.h src/x11_controls.c src/x11_controls.h src/x11_preferences.h
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) $(ARCHIVE_CPPFLAGS) src/x11_archive.c src/archive_io.c src/x11_controls.c -o $@ $(X11_LDFLAGS) $(X11_LIBS) $(ARCHIVE_LIBS)
+
+$(BUILD_DIR)/wiidesk-x11-packages: src/x11_packages.c src/package_io.c src/package_io.h src/x11_controls.c src/x11_controls.h src/x11_preferences.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) src/x11_packages.c src/package_io.c src/x11_controls.c -o $@ $(X11_LDFLAGS) $(X11_LIBS)
+
+$(BUILD_DIR)/wiidesk-package-install: src/package_install.c src/package_io.c src/package_io.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror src/package_install.c src/package_io.c -o $@
+
+$(BUILD_DIR)/wiidesk-package-terminal: src/package_terminal.c
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $< -o $@
 
 $(BUILD_DIR)/x11-wm-smoke: tests/x11_wm_smoke.c
 	mkdir -p $(BUILD_DIR)

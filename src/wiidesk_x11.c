@@ -37,8 +37,8 @@ static Display *display;
 static Window root, panel, check, menu;
 static int menu_open, menu_selected;
 static char app_program[PATH_MAX];
-static const char *const menu_labels[] = { "Terminal", "Files", "System", "Settings", "Editor", "Processes", "Session", "Log Viewer", "Calculator", "Network Settings", "Image Viewer", "Archive Manager" };
-static const char *const app_arguments[] = { NULL, "files", "system", "settings", "editor", "processes", "session", "logs", "calculator", "network", "images", "archives" };
+static const char *const menu_labels[] = { "Terminal", "Files", "System", "Settings", "Editor", "Processes", "Session", "Log Viewer", "Calculator", "Network Settings", "Image Viewer", "Archive Manager", "Package Installer" };
+static const char *const app_arguments[] = { NULL, "files", "system", "settings", "editor", "processes", "session", "logs", "calculator", "network", "images", "archives", "packages" };
 #define MENU_ITEMS ((int)(sizeof(menu_labels) / sizeof(menu_labels[0])))
 static int screen, screen_width, screen_height, ownership_error;
 static GC gc, outline_gc;

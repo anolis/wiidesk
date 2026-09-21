@@ -51,6 +51,7 @@ python3 tests/x11_core_apps_smoke.py
 python3 tests/x11_utilities_smoke.py
 python3 tests/x11_image_smoke.py
 python3 tests/x11_archive_smoke.py
+python3 tests/x11_package_smoke.py
 kill -TERM "$wm_pid"
 wait "$wm_pid"
 wm_pid=

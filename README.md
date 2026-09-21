@@ -79,8 +79,11 @@ implementation remains experimental; [managed X11 sessions](docs/x11-sessions.md
 add XDM login at boot, password lock/unlock, configurable idle locking, and
 logout, with supervised recovery to the native desktop. Suspend and
 hibernate are unavailable in the current kernel. Install `wiidesk-x11`,
-`wiidesk-x11-app`, `wiidesk-x11-image`, `wiidesk-x11-archive` and
+`wiidesk-x11-app`, `wiidesk-x11-image`, `wiidesk-x11-archive`,
+`wiidesk-x11-packages`, `wiidesk-package-install`, `wiidesk-package-terminal` and
 `wiidesk-session-health` in the same directory.
+The [Package Installer](docs/package-installer.md) uses existing `sudo`, `xterm`,
+`dpkg`, `dpkg-deb`, `dpkg-query` and `sha256sum` tools; it never invokes APT.
 
 ## Source Layout
 
