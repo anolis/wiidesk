@@ -57,6 +57,16 @@ X11_SESSION_LIBS ?= -lXss
 IMAGE_LIBS ?= -lpng -ljpeg
 ARCHIVE_CPPFLAGS ?=
 ARCHIVE_LIBS ?= -larchive
+AUDIO_CPPFLAGS ?=
+AUDIO_LDFLAGS ?=
+AUDIO_LIBS ?= -lasound -lmpg123
+.PHONY: audio-tests audio-probe
+audio-probe: $(BUILD_DIR)/audio-probe
+$(BUILD_DIR)/audio-probe: tests/audio_probe.c src/audio_decode.c src/audio_decode.h src/audio_playlist.c src/audio_playlist.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror -Isrc $(AUDIO_CPPFLAGS) tests/audio_probe.c src/audio_decode.c src/audio_playlist.c -o $@ $(AUDIO_LDFLAGS) $(AUDIO_LIBS)
+audio-tests: $(BUILD_DIR)/audio-probe $(BUILD_DIR)/wiidesk-audio-worker
+	python3 tests/audio_test.py $(BUILD_DIR)
 .PHONY: package-tests package-probe
 package-probe: $(BUILD_DIR)/package-probe
 $(BUILD_DIR)/package-probe: tests/package_probe.c src/package_io.c src/package_io.h
@@ -82,7 +92,7 @@ $(BUILD_DIR)/image-decode-test.so: src/image_decode.c src/image_decode.h
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror -fPIC -shared $(X11_CPPFLAGS) src/image_decode.c -o $@ $(X11_LDFLAGS) $(IMAGE_LIBS)
 .PHONY: wiidesk-x11 x11-test-client
-wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health $(BUILD_DIR)/wiidesk-x11-image $(BUILD_DIR)/wiidesk-x11-archive $(BUILD_DIR)/wiidesk-x11-packages $(BUILD_DIR)/wiidesk-package-install $(BUILD_DIR)/wiidesk-package-terminal
+wiidesk-x11: $(BUILD_DIR)/wiidesk-x11 $(BUILD_DIR)/wiidesk-x11-app $(BUILD_DIR)/wiidesk-session-health $(BUILD_DIR)/wiidesk-x11-image $(BUILD_DIR)/wiidesk-x11-archive $(BUILD_DIR)/wiidesk-x11-packages $(BUILD_DIR)/wiidesk-package-install $(BUILD_DIR)/wiidesk-package-terminal $(BUILD_DIR)/wiidesk-x11-audio $(BUILD_DIR)/wiidesk-audio-worker
 x11-test-client: $(BUILD_DIR)/x11-wm-smoke
 
 .PHONY: x11-controls-test calculator-test utility-unit-tests
@@ -131,6 +141,14 @@ $(BUILD_DIR)/wiidesk-package-install: src/package_install.c src/package_io.c src
 $(BUILD_DIR)/wiidesk-package-terminal: src/package_terminal.c
 	mkdir -p $(BUILD_DIR)
 	$(CC) -O2 -Wall -Wextra -Werror $< -o $@
+
+$(BUILD_DIR)/wiidesk-x11-audio: src/x11_audio.c src/audio_playlist.c src/audio_playlist.h src/x11_controls.c src/x11_controls.h src/x11_preferences.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $(X11_CPPFLAGS) src/x11_audio.c src/audio_playlist.c src/x11_controls.c -o $@ $(X11_LDFLAGS) $(X11_LIBS)
+
+$(BUILD_DIR)/wiidesk-audio-worker: src/audio_worker.c src/audio_decode.c src/audio_decode.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Werror $(AUDIO_CPPFLAGS) src/audio_worker.c src/audio_decode.c -o $@ $(AUDIO_LDFLAGS) $(AUDIO_LIBS)
 
 $(BUILD_DIR)/x11-wm-smoke: tests/x11_wm_smoke.c
 	mkdir -p $(BUILD_DIR)

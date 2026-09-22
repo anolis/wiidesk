@@ -6,9 +6,9 @@ launcher does not by itself mean its planned feature set is complete.
 
 ## Current priority
 
-Continue the core suite with **Audio Player**. Shared controls now support text
-entry, selection, scrolling lists, buttons, dialogs and clipboard. Refresh the
-OS image after the app suite, then return to pointer/window performance work.
+Restore the **Wii kernel audio driver** so the new Audio Player can produce
+physical sound. Refresh the OS image with the app suite and dependencies, then
+return to pointer/window performance work.
 
 | App | Planned initial scope | Status |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ OS image after the app suite, then return to pointer/window performance work.
 | Archive Manager | List and extract archives, with progress and cancellation | Implemented for ZIP/tar with bounded streaming, private output folders and incomplete markers; host/16-bit and Wii extraction/cancellation checks passed; installed, launcher updates on next login; see [rules and evidence](archive-manager.md) |
 | Calculator | Basic arithmetic, scientific functions, and history | Host and hardware tests passed for evaluation, errors and history; radians, bounded parser and 64-entry in-memory history |
 | Package Installer | Inspect/install transferred `.deb` bundles using `dpkg`; resolve/download dependencies on the host | Implemented with bounded snapshots, metadata review, sudo terminal and verified dpkg results; host/16-bit checks and Wii installation passed; see [limits and verification](package-installer.md) |
-| Audio Player | Local playback, playlists, and simple controls | Planned |
+| Audio Player | Local playback, playlists, and simple controls | Implemented for bounded WAV/MP3 and local M3U playlists; host and Wii controls/playback passed with silent ALSA output; installed with launcher available; physical output blocked by the missing Wii kernel audio driver; see [controls and hardware gap](audio-player.md) |
 
 ## Existing desktop components
 

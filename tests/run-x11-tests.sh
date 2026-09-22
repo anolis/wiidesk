@@ -27,6 +27,7 @@ fi
 server_pid=$!
 export DISPLAY="$test_display" XAUTHORITY="$test_dir/Xauthority"
 export HOME="$test_dir/home" WIIDESK_TEST_HOME="$test_dir/home"
+export WIIDESK_AUDIO_DEVICE=null
 unset XDG_CONFIG_HOME
 unset XDG_DATA_HOME
 i=0
@@ -52,6 +53,7 @@ python3 tests/x11_utilities_smoke.py
 python3 tests/x11_image_smoke.py
 python3 tests/x11_archive_smoke.py
 python3 tests/x11_package_smoke.py
+python3 tests/x11_audio_smoke.py
 kill -TERM "$wm_pid"
 wait "$wm_pid"
 wm_pid=
