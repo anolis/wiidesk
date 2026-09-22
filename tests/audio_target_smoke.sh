@@ -6,19 +6,21 @@ stage=${1:?Usage: audio_target_smoke.sh STAGE_WITH_FIXTURES}
 build=${WIIDESK_TEST_BUILD:-/usr/local/lib/wiidesk-session}
 app=$build/wiidesk-x11-audio
 worker=$build/wiidesk-audio-worker
+device=${WIIDESK_TEST_AUDIO_DEVICE:-null}
 job=$(mktemp -d /var/tmp/wiidesk-audio-test.XXXXXX)
 cp "$stage"/fixtures/* "$job/"
 for name in tone.wav tone.mp3; do
-    { sleep .4; echo 'P 1'; sleep .6; echo 'S 1500'; echo 'V 0'; echo 'P 0'; sleep 2; } | "$worker" "$job/$name" null > "$job/$name.log" 2>&1
+    { echo 'V 0'; sleep .4; echo 'P 1'; sleep .6; echo 'S 1500'; echo 'P 0'; sleep 2; } | "$worker" "$job/$name" "$device" > "$job/$name.log" 2>&1
     grep -q 'STATE playing' "$job/$name.log"
     grep -q 'STATE paused' "$job/$name.log"
     grep -q 'POS 1500' "$job/$name.log"
     grep -q 'STATE ended' "$job/$name.log"
+    if grep -Eq 'XRUN|ERROR' "$job/$name.log"; then exit 1; fi
 done
-if "$worker" "$job/tone.wav" default < /dev/null > "$job/missing.log" 2>&1; then exit 1; fi
+if "$worker" "$job/tone.wav" wiidesk_nonexistent_device < /dev/null > "$job/missing.log" 2>&1; then exit 1; fi
 grep -q 'ERROR Audio device:' "$job/missing.log"
 if [ "${WIIDESK_AUDIO_BACKEND_ONLY:-0}" = 1 ]; then
-    printf 'PASS: Wii WAV/MP3 null playback controls and missing-device error. Evidence: %s\n' "$job"
+    printf 'PASS: Wii WAV/MP3 muted playback controls (%s) and missing-device error. Evidence: %s\n' "$device" "$job"
     exit 0
 fi
 export DISPLAY=${DISPLAY:-:1} XAUTHORITY=${XAUTHORITY:-/home/wii/.Xauthority}
@@ -43,6 +45,7 @@ open_app() {
     xdotool windowactivate --sync "$window"
     wait_status 'Loaded 2 track'
 }
+export WIIDESK_AUDIO_DEVICE=wiidesk_nonexistent_device
 open_app
 key space
 wait_status 'Audio device:'

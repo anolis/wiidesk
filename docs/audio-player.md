@@ -77,9 +77,10 @@ channel count and frame count for both test formats. Artifacts are in
 
 The Wii has no Python installation. `tests/audio_target_smoke.sh STAGE` runs
 the corresponding hardware checks as the session user using shell/xdotool
-and pre-generated files in `STAGE/fixtures/`. This version deliberately expects
-the default-device open to fail until the driver is restored; update that
-expectation when hardware output becomes available.
+and pre-generated files in `STAGE/fixtures/`. Missing-device checks use an
+explicitly nonexistent device, so they work with or without a soundcard.
+`WIIDESK_TEST_AUDIO_DEVICE=default` runs the backend controls against hardware
+with volume zero from the first sample; the default test device is `null`.
 `WIIDESK_AUDIO_BACKEND_ONLY=1` skips GUI checks. On the Wii, the final null-output
 and GUI suite passed in `/var/tmp/wiidesk-audio-test.YavZDl`: WAV/MP3 playback,
 the missing-device error, pause/resume/seek/volume, next/previous, playlist
@@ -95,7 +96,7 @@ silent-output configuration was installed. Final deployed hashes:
 - GUI: `580d0aa9ee6fc6248bf6edd910e5676c28d18ae314d0bb6c7d43859715bad02c`
 - Worker: `0d7b046e98bfaed992cca34bca768db07d0c01c121c8a73f5b568cb466efecb3`
 
-**Physical audio is blocked by the kernel, not yet verified.** The running
+At the original app milestone, physical audio was blocked by the kernel. The
 6.18.40-wii+ kernel reports `No soundcards found`; `/dev/snd` contains only
 sequencer/timer nodes. `CONFIG_SND`/`CONFIG_SND_PPC` are enabled, but the current
 kernel source at `bdad35dada0c81d8c7c6f458db62d0c4662e388e` has no Wii/GameCube
@@ -108,6 +109,28 @@ stereo output, underruns under UI load, and audible pause/seek. The older
 `wii-linux-ngx/sound/ppc/gcn-ai.c` is a reference, not a drop-in module for this
 kernel. Its binding names also differ from the current `hollywood-ai` device
 tree node. No kernel or device-tree change was made in this app milestone.
+
+### Driver bring-up follow-up, September 21
+
+An experimental `snd-gcn-ai` module now registers `WiiAI` on the running
+6.18.40-wii+ kernel. Direct silent playback has passed at 32/48 kHz. With
+that module loaded, the corrected worker passed WAV/MP3 playback, pause,
+seek, resume and completion through ALSA `default`, without XRUN/ERROR
+messages, in `/var/tmp/wiidesk-audio-test.HxNOHX`. These tests used volume
+zero: physical sound quality and channel routing remain unverified.
+
+The hardware run exposed a nonblocking drain behavior hidden by the null
+plugin: the kernel can return `EAGAIN` even after reaching `SETUP`. The
+worker now recognizes that completed state instead of eventually reporting
+a stalled device. Host decode/control/null/file-output tests also pass.
+The corrected worker is installed (SHA-256
+`82d9c76b65670afc6cca7ee33eab93c2f57253b0df6be8f3c4fb65d1c1b6d496`),
+with its predecessor backed up in `/var/tmp/wii-audio-driver-20260921`.
+The installed worker repeated the muted hardware suite successfully in
+`/var/tmp/wiidesk-audio-test.FOv0kS`.
+The boot kernel and persistent module configuration remain unchanged while
+the driver is being validated. Driver details and remaining checks are in
+the kernel repository's `docs/wii-audio-bringup-2026-09-21.md`.
 
 The OS image remains the earlier baseline and still needs rebuilding with
 the new apps and their runtime dependencies.

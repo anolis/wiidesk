@@ -83,7 +83,8 @@ int main(int argc,char **argv)
             }
             if(eof && (submitted-anchor)*1000/info.rate<=(int64_t)(t-began)) {
                 rc=snd_pcm_drain(pcm);
-                if(rc==0) { printf("POS %lld\nSTATE ended\n",(long long)(submitted*1000/info.rate)); break; }
+                /* Hardware nonblocking drain may report EAGAIN after completion. */
+                if(rc==0 || ((rc==-EAGAIN || rc==-EINTR) && snd_pcm_state(pcm)==SND_PCM_STATE_SETUP)) { printf("POS %lld\nSTATE ended\n",(long long)(submitted*1000/info.rate)); break; }
                 if(rc!=-EAGAIN && rc!=-EINTR) { snprintf(error,sizeof(error),"Audio drain: %s",snd_strerror(rc)); failed=1; break; }
             }
             if(t-progress>10000) { strcpy(error,"Audio device stopped accepting samples"); failed=1; break; }
