@@ -7,10 +7,39 @@ build=${WIIDESK_TEST_BUILD:-/usr/local/lib/wiidesk-session}
 app=$build/wiidesk-x11-audio
 worker=$build/wiidesk-audio-worker
 device=${WIIDESK_TEST_AUDIO_DEVICE:-null}
-job=$(mktemp -d /var/tmp/wiidesk-audio-test.XXXXXX)
+job=$(mktemp -d "${WIIDESK_AUDIO_TEST_TMPDIR:-/var/tmp}/wiidesk-audio-test.XXXXXX")
 cp "$stage"/fixtures/* "$job/"
+backend=
+backend_cleanup() {
+    if [ -n "$backend" ]; then
+        kill -TERM "$backend" 2>/dev/null || true
+        wait "$backend" 2>/dev/null || true
+    fi
+}
+trap backend_cleanup EXIT
+mkfifo "$job/commands"
+await_backend() {
+    i=0
+    until grep -q "$1" "$job/$name.log"; do
+        i=$((i+1)); test "$i" -lt 150
+        # The worker can publish its final state between grep and kill -0.
+        if ! kill -0 "$backend" 2>/dev/null; then
+            grep -q "$1" "$job/$name.log"
+            return
+        fi
+        sleep .1
+    done
+}
 for name in tone.wav tone.mp3; do
-    { echo 'V 0'; sleep .4; echo 'P 1'; sleep .6; echo 'S 1500'; echo 'P 0'; sleep 2; } | "$worker" "$job/$name" "$device" > "$job/$name.log" 2>&1
+    # Schedule controls relative to worker readiness, not slow process startup.
+    exec 3<> "$job/commands"
+    printf 'V 0\n' >&3
+    "$worker" "$job/$name" "$device" < "$job/commands" 3>&- > "$job/$name.log" 2>&1 & backend=$!
+    await_backend 'STATE playing'
+    sleep .4; printf 'P 1\n' >&3; await_backend 'STATE paused'
+    sleep .6; printf 'S 1500\nP 0\n' >&3; await_backend 'STATE ended'
+    wait "$backend"; backend=
+    exec 3>&-
     grep -q 'STATE playing' "$job/$name.log"
     grep -q 'STATE paused' "$job/$name.log"
     grep -q 'POS 1500' "$job/$name.log"

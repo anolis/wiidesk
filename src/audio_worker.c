@@ -11,6 +11,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#define AUDIO_BUFFER_US 250000
+#define AUDIO_LEAD_MS 230
+
 static uint64_t now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000; }
 static int64_t audible(snd_pcm_t *pcm,int64_t submitted)
 { snd_pcm_sframes_t delay=0; if(snd_pcm_delay(pcm,&delay)<0 || delay<0)delay=0; return submitted>delay?submitted-delay:0; }
@@ -27,13 +30,16 @@ int main(int argc,char **argv)
     snd_pcm_t *pcm=NULL;
     int rc=snd_pcm_open(&pcm,argv[2],SND_PCM_STREAM_PLAYBACK,SND_PCM_NONBLOCK);
     if(rc<0) { printf("ERROR Audio device: %s\n",snd_strerror(rc)); audio_close(decoder); return 1; }
-    rc=snd_pcm_set_params(pcm,SND_PCM_FORMAT_S16,SND_PCM_ACCESS_RW_INTERLEAVED,info.channels,info.rate,1,100000);
+    /* Cover short SD-card stalls within the Wii driver's 64 KiB DMA ring. */
+    rc=snd_pcm_set_params(pcm,SND_PCM_FORMAT_S16,SND_PCM_ACCESS_RW_INTERLEAVED,info.channels,info.rate,1,AUDIO_BUFFER_US);
     if(rc<0) { printf("ERROR Audio format: %s\n",snd_strerror(rc)); snd_pcm_close(pcm); audio_close(decoder); return 1; }
     fcntl(STDIN_FILENO,F_SETFL,O_NONBLOCK);
     printf("INFO %u %u %lld %d\nSTATE playing\n",info.rate,info.channels,(long long)(info.frames<0?-1:info.frames*1000/info.rate),info.estimated);
     int paused=0,volume=50,quit=0,failed=0,eof=0,count=0,offset=0;
     int64_t submitted=0,anchor=0;
     uint64_t began=now(),next=0,progress=now();
+    int diagnostics=getenv("WIIDESK_AUDIO_DIAGNOSTICS")!=NULL;
+    uint64_t last_write=began,max_write_gap=0,max_decode=0;
     int16_t samples[8192]; char commands[128]; size_t used=0;
     while(!quit) {
         char byte;
@@ -54,6 +60,7 @@ int main(int argc,char **argv)
             position=audio_seek(decoder,position);
             if(position<0) { snprintf(error,sizeof(error),"%s",audio_error(decoder)); failed=quit=1; break; }
             submitted=anchor=position; count=offset=eof=0; began=progress=now();
+            last_write=began;
             if(op=='P')paused=(int)value;
             if(snd_pcm_prepare(pcm)<0) { strcpy(error,"Cannot restart audio device"); failed=quit=1; break; }
             printf("POS %lld\nSTATE %s\n",(long long)(position*1000/info.rate),paused?"paused":"playing");
@@ -62,21 +69,31 @@ int main(int argc,char **argv)
         uint64_t t=now();
         if(t>=next) { printf("POS %lld\n",(long long)(audible(pcm,submitted)*1000/info.rate)); next=t+250; }
         /* Limit producer lead even for ALSA null/file sinks; no busy decode loop. */
-        int ahead=(submitted-anchor)*1000/info.rate>(int64_t)(t-began)+80;
+        int ahead=(submitted-anchor)*1000/info.rate>(int64_t)(t-began)+AUDIO_LEAD_MS;
         if(!paused && !ahead) {
             if(offset==count && !eof) {
+                uint64_t decode_start=diagnostics?now():0;
                 count=audio_read(decoder,samples,1024); offset=0;
+                if(diagnostics) { uint64_t elapsed=now()-decode_start; if(elapsed>max_decode)max_decode=elapsed; }
                 if(count<0) { snprintf(error,sizeof(error),"%s",audio_error(decoder)); failed=1; break; }
                 if(!count)eof=1;
                 for(int i=0;i<count*(int)info.channels;i++)samples[i]=(int16_t)((int)samples[i]*volume/100);
             }
             if(offset<count) {
                 snd_pcm_sframes_t n=snd_pcm_writei(pcm,samples+(size_t)offset*info.channels,(snd_pcm_uframes_t)(count-offset));
-                if(n>0) { offset+=(int)n; submitted+=n; progress=t; }
+                if(n>0) {
+                    offset+=(int)n; submitted+=n; progress=t;
+                    if(diagnostics) { uint64_t at=now(),gap=at-last_write; if(gap>max_write_gap)max_write_gap=gap; last_write=at; }
+                    /* Fill available PCM space before sleeping. Under load,
+                     * a 10 ms wait per chunk can undersupply 48 kHz audio.
+                     * The next iteration still checks commands and lead. */
+                    continue;
+                }
                 else if(n<0 && n!=-EAGAIN && n!=-EINTR) {
                     if(n==-EPIPE && snd_pcm_prepare(pcm)>=0) {
                         /* Drop queued frames on an underrun; preserve source order. */
                         puts("XRUN");
+                        if(diagnostics)fprintf(stderr,"Audio timing: underrun, since_write_ms=%llu max_write_gap_ms=%llu max_decode_ms=%llu\n",(unsigned long long)(now()-last_write),(unsigned long long)max_write_gap,(unsigned long long)max_decode);
                         began=t; anchor=submitted;
                     } else { snprintf(error,sizeof(error),"Playback: %s",snd_strerror((int)n)); failed=1; break; }
                 }
@@ -93,5 +110,6 @@ int main(int argc,char **argv)
         struct pollfd p={.fd=STDIN_FILENO,.events=POLLIN}; poll(&p,1,paused?100:10);
     }
     if(failed)printf("ERROR %s\n",error[0]?error:"Invalid player command");
+    if(diagnostics)fprintf(stderr,"Audio timing: max_write_gap_ms=%llu max_decode_ms=%llu\n",(unsigned long long)max_write_gap,(unsigned long long)max_decode);
     snd_pcm_drop(pcm); snd_pcm_close(pcm); audio_close(decoder); return failed?1:0;
 }

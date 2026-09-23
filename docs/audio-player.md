@@ -33,7 +33,7 @@ does not change a system mixer. MP3 duration estimates carry a `~` marker.
   address-space cap, bounded buffers, and no core dumps. The GUI stops workers
   after 15 seconds without progress. Closing, stopping, or replacing a track
   terminates and reaps its worker; closing the GUI also kills it if the GUI dies.
-- PCM writes use ALSA nonblocking mode and about 100 ms of buffering. Pause
+- PCM writes use ALSA nonblocking mode and about 250 ms of buffering. Pause
   drops queued audio and seeks back to the estimated audible position, so it
   does not require hardware pause support. Seeking is capped at 24 hours.
   Underruns are recovered when possible and reported, not silently counted as
@@ -134,3 +134,48 @@ the kernel repository's `docs/wii-audio-bringup-2026-09-21.md`.
 
 The OS image remains the earlier baseline and still needs rebuilding with
 the new apps and their runtime dependencies.
+
+## Load-test follow-up, September 22–23
+
+The installed worker now fills available PCM space before sleeping, while
+checking commands between chunks. Previously it waited 10 ms after every
+successful 1024-frame write. Its requested buffer is 250 ms, with a bounded
+230 ms producer lead for clockless test sinks. The driver has a fixed 64 KiB
+DMA allocation (32 KiB more than the initial driver); 48 kHz stereo uses
+48,000 bytes for a 250 ms ring. Pause/seek still drop queued samples, so
+these controls do not wait for the whole buffer to play.
+
+The Wii-specific SD-card request cap is also necessary to address observed
+hard-IRQ stalls: large SD writes blocked audio interrupts for tens of
+milliseconds. The deployed udev rule limits Hollywood MMC disks to 4 KiB
+requests. It reduces sequential throughput; the OS repository documents
+the measured tradeoff in `docs/sd-audio-latency.md`.
+
+Five eight-second, muted 48 kHz WAV runs passed with simultaneous CPU load
+and repeated direct SD writes/reads, without XRUN/ERROR messages. Evidence:
+`/var/tmp/wii-audio-player-load.JD1eV7`. The WAV/MP3 pause/seek/resume/end and
+missing-device checks then passed under the same loads in
+`/var/tmp/wii-audio-player-load.3d5nEq` (control details in
+`/dev/shm/wiidesk-audio-test.NtnNSZ`). Control fixtures are copied to RAM;
+the sustained WAV source remains on the SD card. These finite tests do not
+establish a zero failure rate under arbitrary load.
+
+Earlier load comparisons wrote each POS line synchronously to the saturated
+SD card; those results were confounded by test logging and cannot establish
+the benefit of a particular player buffer size. Live logs now use tmpfs and
+are persisted after load stops. The target smoke test also waits for worker
+readiness before sending controls, keeps stdin open through completion, and
+rechecks final output if the worker exits between checks.
+
+`WIIDESK_AUDIO_TEST_TMPDIR=/dev/shm` keeps target smoke fixtures/logs in RAM.
+`WIIDESK_AUDIO_DIAGNOSTICS=1` optionally reports write-gap/decode timings to
+stderr. Metrics include startup, which can be slow without causing an
+underrun before playback starts; they are not CPU-time measurements.
+Diagnostics are off in normal desktop use.
+
+The deployed worker SHA-256 is
+`a2ccda9a1120fca35e3727f136e94359db053857d3d4a08342e951b58debd0e6`;
+the prior worker is backed up as
+`/var/tmp/wii-audio-driver-20260921/refill250/worker.previous`.
+The host decode/control/null/file-output suite passed. The boot kernel was
+not replaced; cold-boot autoload and a refreshed OS image remain to verify.
